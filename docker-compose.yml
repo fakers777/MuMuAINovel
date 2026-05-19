@@ -53,7 +53,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mumujie/mumuainovel:latest
+    image: ${APP_IMAGE:-ghcr.io/fakers777/mumuainovel:latest}
     container_name: mumuainovel
     depends_on:
       postgres:
@@ -142,4 +142,3 @@ volumes:
 networks:
   ai-story-network:
     driver: bridge
-
