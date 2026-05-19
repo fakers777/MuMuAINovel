@@ -440,6 +440,7 @@ JSON 结构：
     async def list_projects(self, *, user_id: str, db: AsyncSession) -> list[AdaptationProjectListItem]:
         result = await db.execute(
             select(AdaptationProject, Project, AdaptationSourceCorpus)
+            .select_from(AdaptationProject)
             .join(Project, Project.id == AdaptationProject.project_id)
             .join(AdaptationSourceCorpus, AdaptationSourceCorpus.adaptation_project_id == AdaptationProject.id)
             .where(AdaptationProject.user_id == user_id)
