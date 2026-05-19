@@ -61,9 +61,13 @@ import type {
   BookImportCreateTaskPayload,
   BookImportResult,
   BookImportRetryResult,
-  AdaptationState,
-  ConfirmAdaptationOutlinesResponse,
-  ReopenAdaptationPlanResponse,
+  AdaptationProjectCreateResponse,
+  AdaptationProjectListItem,
+  AdaptationProjectDetail,
+  AdaptationBriefSaveResponse,
+  AdaptationPlanningBatch,
+  AdaptationBatchConfirmResponse,
+  AdaptationChapterGenerateResponse,
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
@@ -473,19 +477,10 @@ export const bookImportApi = {
     const formData = new FormData();
     formData.append('file', params.file);
     const tailChapterCount = params.tail_chapter_count ?? 10;
-    const workflowMode = params.workflow_mode ?? 'standard';
-    formData.append('workflow_mode', workflowMode);
-    formData.append('extract_mode', workflowMode === 'adaptation' ? 'full' : (params.extract_mode ?? 'tail'));
+    formData.append('extract_mode', params.extract_mode ?? 'tail');
     formData.append('tail_chapter_count', String(tailChapterCount));
-    if (params.adaptation_config) {
-      formData.append('target_age', String(params.adaptation_config.target_age));
-      formData.append('enforce_chronological', String(params.adaptation_config.enforce_chronological));
-      formData.append('strict_fidelity', String(params.adaptation_config.strict_fidelity));
-      formData.append('compress_romance', String(params.adaptation_config.compress_romance));
-      formData.append('outline_batch_size', String(params.adaptation_config.outline_batch_size));
-    }
 
-    return api.post<unknown, { task_id: string; status: BookImportTask['status']; workflow_mode: BookImportTask['workflow_mode'] }>(
+    return api.post<unknown, { task_id: string; status: BookImportTask['status'] }>(
       '/book-import/tasks',
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
@@ -526,14 +521,51 @@ export const bookImportApi = {
 };
 
 export const adaptationApi = {
-  getState: (projectId: string) =>
-    api.get<unknown, AdaptationState>(`/adaptation/projects/${projectId}`),
+  createProject: (params: { file: File; title?: string; description?: string }) => {
+    const formData = new FormData();
+    formData.append('file', params.file);
+    if (params.title) {
+      formData.append('title', params.title);
+    }
+    if (params.description) {
+      formData.append('description', params.description);
+    }
+    return api.post<unknown, AdaptationProjectCreateResponse>(
+      '/original-novel-adaptation/projects',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+  },
 
-  confirmOutlines: (projectId: string) =>
-    api.post<unknown, ConfirmAdaptationOutlinesResponse>(`/adaptation/projects/${projectId}/confirm-outlines`),
+  listProjects: () =>
+    api.get<unknown, AdaptationProjectListItem[]>('/original-novel-adaptation/projects'),
 
-  reopenPlan: (projectId: string) =>
-    api.post<unknown, ReopenAdaptationPlanResponse>(`/adaptation/projects/${projectId}/reopen-plan`),
+  getProjectDetail: (adaptationProjectId: string) =>
+    api.get<unknown, AdaptationProjectDetail>(`/original-novel-adaptation/projects/${adaptationProjectId}`),
+
+  saveBrief: (adaptationProjectId: string, payload: { brief_text: string; example_template?: string | null }) =>
+    api.put<unknown, AdaptationBriefSaveResponse>(`/original-novel-adaptation/projects/${adaptationProjectId}/brief`, payload),
+
+  planNextBatch: (adaptationProjectId: string, batchSize: number) =>
+    api.post<unknown, AdaptationPlanningBatch>(
+      `/original-novel-adaptation/projects/${adaptationProjectId}/plan-batch`,
+      { batch_size: batchSize }
+    ),
+
+  confirmBatch: (adaptationProjectId: string, batchId: string) =>
+    api.post<unknown, AdaptationBatchConfirmResponse>(
+      `/original-novel-adaptation/projects/${adaptationProjectId}/batches/${batchId}/confirm`,
+      {}
+    ),
+
+  generateChapter: (
+    adaptationProjectId: string,
+    payload: { chapter_id: string; batch_item_id: string; regenerate?: boolean }
+  ) =>
+    api.post<unknown, AdaptationChapterGenerateResponse>(
+      `/original-novel-adaptation/projects/${adaptationProjectId}/generate-chapter`,
+      payload
+    ),
 };
 
 export const outlineApi = {

@@ -1001,50 +1001,6 @@ export interface ForeshadowContextResponse {
 export type BookImportTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type BookImportWarningLevel = 'info' | 'warning' | 'error';
 export type BookImportExtractMode = 'tail' | 'full';
-export type BookImportWorkflowMode = 'standard' | 'adaptation';
-
-export interface AdaptationConfig {
-  target_age: number;
-  enforce_chronological: boolean;
-  strict_fidelity: boolean;
-  compress_romance: boolean;
-  outline_batch_size: number;
-}
-
-export interface AdaptationState {
-  project_id: string;
-  workflow_mode: 'adaptation';
-  workflow_status: 'planning' | 'confirmed' | 'materialized' | 'generating' | 'writing';
-  source_filename?: string | null;
-  source_chapter_count: number;
-  source_word_count: number;
-  planned_outline_count: number;
-  target_age: number;
-  enforce_chronological: boolean;
-  strict_fidelity: boolean;
-  compress_romance: boolean;
-  outline_batch_size: number;
-  confirmed_at?: string | null;
-  materialized_at?: string | null;
-  generation_started_at?: string | null;
-  can_confirm: boolean;
-  can_reopen: boolean;
-  has_generated_chapters: boolean;
-}
-
-export interface ConfirmAdaptationOutlinesResponse {
-  success: boolean;
-  project_id: string;
-  chapter_count: number;
-  workflow_status: AdaptationState['workflow_status'];
-}
-
-export interface ReopenAdaptationPlanResponse {
-  success: boolean;
-  project_id: string;
-  workflow_status: AdaptationState['workflow_status'];
-  removed_placeholder_chapters: number;
-}
 
 export interface BookImportWarning {
   code: string;
@@ -1079,7 +1035,6 @@ export interface BookImportOutline {
 export interface BookImportTask {
   task_id: string;
   status: BookImportTaskStatus;
-  workflow_mode?: BookImportWorkflowMode;
   progress: number;
   message?: string;
   error?: string;
@@ -1089,7 +1044,6 @@ export interface BookImportTask {
 
 export interface BookImportPreview {
   task_id: string;
-  workflow_mode?: BookImportWorkflowMode;
   project_suggestion: BookImportProjectSuggestion;
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
@@ -1105,17 +1059,13 @@ export interface BookImportApplyPayload {
 
 export interface BookImportCreateTaskPayload {
   file: File;
-  workflow_mode?: BookImportWorkflowMode;
   extract_mode?: BookImportExtractMode;
   tail_chapter_count?: number;
-  adaptation_config?: AdaptationConfig;
 }
 
 export interface BookImportResult {
   success: boolean;
   project_id: string;
-  workflow_mode?: BookImportWorkflowMode;
-  next_route?: string | null;
   statistics: {
     chapters: number;
     outlines: number;
@@ -1138,6 +1088,129 @@ export interface BookImportRetryResult {
   project_id: string;
   retry_results: Record<string, number>;
   still_failed: BookImportStepFailure[];
+}
+
+export type AdaptationWorkflowStatus =
+  | 'source_uploaded'
+  | 'brief_saved'
+  | 'batch_planning'
+  | 'batch_draft_ready'
+  | 'batch_confirmed'
+  | 'batch_generating'
+  | 'batch_written';
+
+export type AdaptationBatchStatus = 'draft' | 'confirmed' | 'superseded' | 'cancelled';
+
+export interface AdaptationProjectCreateResponse {
+  adaptation_project_id: string;
+  project_id: string;
+  title: string;
+  workflow_status: AdaptationWorkflowStatus;
+  source_filename: string;
+  total_characters: number;
+  total_chunks: number;
+}
+
+export interface AdaptationProjectListItem {
+  adaptation_project_id: string;
+  project_id: string;
+  title: string;
+  workflow_status: AdaptationWorkflowStatus;
+  source_filename: string;
+  brief_version?: number | null;
+  latest_batch_number: number;
+  confirmed_batch_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdaptationBatchItem {
+  id: string;
+  item_index: number;
+  proposed_title: string;
+  proposed_outline: string;
+  source_chunk_ids: string[];
+  source_span_start?: number | null;
+  source_span_end?: number | null;
+  notes?: string | null;
+  materialized_outline_id?: string | null;
+  materialized_chapter_id?: string | null;
+}
+
+export interface AdaptationPlanningBatch {
+  id: string;
+  batch_number: number;
+  requested_batch_size: number;
+  brief_version: number;
+  status: AdaptationBatchStatus;
+  batch_summary?: string | null;
+  retrieval_summary?: Record<string, unknown> | null;
+  confirmed_at?: string | null;
+  items: AdaptationBatchItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdaptationCanonAudit {
+  id: string;
+  audit_type: 'planning' | 'generation';
+  batch_id?: string | null;
+  batch_item_id?: string | null;
+  target_chapter_id?: string | null;
+  brief_version?: number | null;
+  retrieved_chunk_ids: string[];
+  provenance: Array<Record<string, unknown>>;
+  confirmed_batch_refs: Array<Record<string, unknown>>;
+  contradiction_results: Record<string, { status: string; reason: string }>;
+  summary?: string | null;
+  raw_payload?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AdaptationProjectDetail {
+  adaptation_project_id: string;
+  project_id: string;
+  title: string;
+  description?: string | null;
+  workflow_status: AdaptationWorkflowStatus;
+  source_filename: string;
+  total_characters: number;
+  total_chunks: number;
+  active_brief_text?: string | null;
+  active_brief_version?: number | null;
+  example_template?: string | null;
+  draft_batch?: AdaptationPlanningBatch | null;
+  confirmed_batches: AdaptationPlanningBatch[];
+  recent_audits: AdaptationCanonAudit[];
+  can_edit_brief: boolean;
+  can_plan_next_batch: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdaptationBriefSaveResponse {
+  adaptation_project_id: string;
+  version: number;
+  brief_text: string;
+  example_template?: string | null;
+  workflow_status: AdaptationWorkflowStatus;
+}
+
+export interface AdaptationBatchConfirmResponse {
+  success: boolean;
+  adaptation_project_id: string;
+  batch_id: string;
+  materialized_count: number;
+  project_id: string;
+}
+
+export interface AdaptationChapterGenerateResponse {
+  success: boolean;
+  project_id: string;
+  chapter_id: string;
+  title: string;
+  word_count: number;
+  audit_id: string;
 }
 
 // ==================== 提示词工坊类型定义 ====================

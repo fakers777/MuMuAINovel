@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - main
+      - master
     tags:
       - 'v*'
   workflow_dispatch:  # 允许手动触发
 
 env:
-  DOCKER_IMAGE: ghcr.io/fakers777/mumuainovel
+  REGISTRY: ghcr.io
+  IMAGE_NAME: fakers777/mumuainovel
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
@@ -39,7 +41,7 @@ jobs:
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -47,7 +49,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.DOCKER_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             # 对于main/master分支，打latest标签
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}

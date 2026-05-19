@@ -17,6 +17,7 @@ import SystemSettingsPage from './SystemSettings';
 import MCPPluginsPage from './MCPPlugins';
 import PromptTemplates from './PromptTemplates';
 import BookImport from './BookImport';
+import OriginalNovelAdaptation from './OriginalNovelAdaptation';
 import BookshelfPage from './BookshelfPage';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
 import AnnouncementTimelineModal from '../components/AnnouncementTimelineModal';
@@ -44,11 +45,11 @@ const formatWordCount = (count: number): string => {
   }
 };
 
-type ProjectListView = 'projects' | 'settings' | 'system-settings' | 'mcp' | 'prompts' | 'book-import';
+type ProjectListView = 'projects' | 'settings' | 'system-settings' | 'mcp' | 'prompts' | 'book-import' | 'adaptation';
 
 const parseViewFromSearch = (search: string): ProjectListView => {
   const view = new URLSearchParams(search).get('view');
-  if (view === 'settings' || view === 'system-settings' || view === 'mcp' || view === 'prompts' || view === 'book-import' || view === 'projects') {
+  if (view === 'settings' || view === 'system-settings' || view === 'mcp' || view === 'prompts' || view === 'book-import' || view === 'adaptation' || view === 'projects') {
     return view;
   }
   return 'projects';
@@ -402,6 +403,8 @@ export default function ProjectList() {
       ? '提示词模板'
       : activeView === 'book-import'
         ? '拆书导入'
+        : activeView === 'adaptation'
+          ? '原著改编'
         : activeView === 'mcp'
           ? 'MCP 插件'
           : activeView === 'system-settings'
@@ -424,6 +427,11 @@ export default function ProjectList() {
           key: 'book-import',
           icon: <UploadOutlined />,
           label: '拆书导入',
+        },
+        {
+          key: 'adaptation',
+          icon: <FileTextOutlined />,
+          label: '原著改编',
         },
         {
           key: 'mcp',
@@ -470,6 +478,11 @@ export default function ProjectList() {
       key: 'book-import',
       icon: <UploadOutlined />,
       label: '拆书导入',
+    },
+    {
+      key: 'adaptation',
+      icon: <FileTextOutlined />,
+      label: '原著改编',
     },
     {
       key: 'mcp',
@@ -894,6 +907,7 @@ export default function ProjectList() {
           {activeView === 'prompts' && <PromptTemplates />}
           
           {activeView === 'book-import' && <BookImport />}
+          {activeView === 'adaptation' && <OriginalNovelAdaptation />}
           
           {activeView === 'projects' && (
             <BookshelfPage

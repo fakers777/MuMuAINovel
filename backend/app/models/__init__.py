@@ -20,7 +20,15 @@ from app.models.foreshadow import Foreshadow
 from app.models.prompt_workshop import PromptWorkshopItem, PromptSubmission, PromptWorkshopLike
 from app.models.background_task import BackgroundTask
 from app.models.announcement import Announcement
-from app.models.adaptation_project import AdaptationProject
+from app.models.original_novel_adaptation import (
+    AdaptationProject,
+    AdaptationSourceCorpus,
+    AdaptationBrief,
+    AdaptationPlanningBatch,
+    AdaptationBatchItem,
+    AdaptationCanonAudit,
+    AdaptationMaterializationMap,
+)
 
 __all__ = [
     "Project",
@@ -53,4 +61,10 @@ __all__ = [
     "BackgroundTask",
     "Announcement",
     "AdaptationProject",
+    "AdaptationSourceCorpus",
+    "AdaptationBrief",
+    "AdaptationPlanningBatch",
+    "AdaptationBatchItem",
+    "AdaptationCanonAudit",
+    "AdaptationMaterializationMap",
 ]

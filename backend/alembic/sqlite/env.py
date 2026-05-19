@@ -26,7 +26,9 @@ from app.models import (
     RelationshipType, CharacterRelationship, Organization, OrganizationMember,
     StoryMemory, PlotAnalysis, AnalysisTask, BatchGenerationTask,
     RegenerationTask, Career, CharacterCareer, User, MCPPlugin, PromptTemplate,
-    BackgroundTask
+    BackgroundTask, AdaptationProject, AdaptationSourceCorpus, AdaptationBrief,
+    AdaptationPlanningBatch, AdaptationBatchItem, AdaptationCanonAudit,
+    AdaptationMaterializationMap
 )
 
 # Alembic Config 对象
