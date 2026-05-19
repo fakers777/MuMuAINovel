@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.logger import get_logger
 from app.schemas.book_import import (
+    AdaptationConfig,
     BookImportApplyRequest,
     BookImportApplyResponse,
     BookImportPreviewResponse,
@@ -35,8 +36,14 @@ async def create_book_import_task(
     project_id: str | None = Form(default=None, description="兼容参数：当前版本固定新建项目，不支持传入"),
     create_new_project: bool = Form(default=True, description="兼容参数：当前版本仅支持 true"),
     import_mode: str = Form(default="append", description="导入模式：append/overwrite"),
+    workflow_mode: str = Form(default="standard", description="工作流模式：standard/adaptation"),
     extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
     tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
+    target_age: int = Form(default=12, description="改写目标年龄"),
+    enforce_chronological: bool = Form(default=True, description="是否按时间顺序改写"),
+    strict_fidelity: bool = Form(default=True, description="是否保持关键情节与结局"),
+    compress_romance: bool = Form(default=True, description="是否适度压缩情爱描写"),
+    outline_batch_size: int = Form(default=5, description="改写大纲规划批大小"),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -48,6 +55,9 @@ async def create_book_import_task(
     if import_mode not in {"append", "overwrite"}:
         raise HTTPException(status_code=400, detail="import_mode 仅支持 append 或 overwrite")
 
+    if workflow_mode not in {"standard", "adaptation"}:
+        raise HTTPException(status_code=400, detail="workflow_mode 仅支持 standard 或 adaptation")
+
     if extract_mode not in {"tail", "full"}:
         raise HTTPException(status_code=400, detail="extract_mode 仅支持 tail 或 full")
     if tail_chapter_count < 5:
@@ -55,7 +65,13 @@ async def create_book_import_task(
     if tail_chapter_count % 5 != 0:
         raise HTTPException(status_code=400, detail="tail_chapter_count 必须是 5 的倍数")
 
-    if tail_chapter_count > 50:
+    if workflow_mode == "adaptation":
+        if extract_mode != "full":
+            raise HTTPException(status_code=400, detail="改写模式仅支持整本解析")
+        if tail_chapter_count != 10:
+            logger.info("改写模式忽略 tail_chapter_count，统一按整本处理")
+        extract_mode = "full"
+    elif tail_chapter_count > 50:
         extract_mode = "full"
 
     if project_id:
@@ -64,8 +80,18 @@ async def create_book_import_task(
         raise HTTPException(status_code=400, detail="当前仅支持新建项目导入")
 
     create_payload = BookImportTaskCreateRequest(
+        workflow_mode=workflow_mode,
         extract_mode=extract_mode,
         tail_chapter_count=tail_chapter_count,
+        adaptation_config=(
+            None if workflow_mode != "adaptation" else AdaptationConfig(
+                target_age=target_age,
+                enforce_chronological=enforce_chronological,
+                strict_fidelity=strict_fidelity,
+                compress_romance=compress_romance,
+                outline_batch_size=outline_batch_size,
+            )
+        ),
     )
 
     content = await file.read()
@@ -79,8 +105,10 @@ async def create_book_import_task(
         project_id=None,
         create_new_project=True,
         import_mode=import_mode,
+        workflow_mode=create_payload.workflow_mode,
         extract_mode=create_payload.extract_mode,
         tail_chapter_count=create_payload.tail_chapter_count,
+        adaptation_config=create_payload.adaptation_config,
     )
     return task
 
@@ -176,7 +204,10 @@ async def apply_book_import_stream(
             await progress_queue.put(await SSEResponse.send_result({
                 "success": result.success,
                 "project_id": result.project_id,
+                "workflow_mode": result.workflow_mode,
+                "next_route": result.next_route,
                 "statistics": result.statistics,
+                "warnings": result.warnings,
             }))
             await progress_queue.put(await SSEResponse.send_progress("导入完成！", 100, "success"))
             await progress_queue.put(await SSEResponse.send_done())

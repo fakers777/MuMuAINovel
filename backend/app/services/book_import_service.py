@@ -19,6 +19,7 @@ from app.api.common import verify_project_access
 from app.config import settings as app_settings
 from app.database import get_engine
 from app.logger import get_logger
+from app.models.adaptation_project import AdaptationProject
 from app.models.chapter import Chapter
 from app.models.character import Character
 from app.models.career import Career, CharacterCareer
@@ -31,6 +32,7 @@ from app.models.relationship import CharacterRelationship, Organization, Organiz
 from app.models.settings import Settings
 from app.models.writing_style import WritingStyle
 from app.schemas.book_import import (
+    AdaptationConfig,
     BookImportApplyRequest,
     BookImportApplyResponse,
     BookImportChapter,
@@ -40,9 +42,11 @@ from app.schemas.book_import import (
     BookImportTaskCreateResponse,
     BookImportTaskStatusResponse,
     BookImportWarning,
+    BookImportWorkflowMode,
     ProjectSuggestion,
 )
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
+from app.services.adaptation_service import AdaptationService
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 
@@ -66,8 +70,10 @@ class _BookImportTask:
     project_id: Optional[str]
     create_new_project: bool
     import_mode: str
+    workflow_mode: BookImportWorkflowMode = "standard"
     extract_mode: BookImportExtractMode = "tail"
     tail_chapter_count: int = 10
+    adaptation_config: Optional[AdaptationConfig] = None
     status: str = "pending"
     progress: int = 0
     message: Optional[str] = "任务已创建"
@@ -98,15 +104,18 @@ class BookImportService:
         project_id: Optional[str],
         create_new_project: bool,
         import_mode: str,
+        workflow_mode: BookImportWorkflowMode = "standard",
         extract_mode: BookImportExtractMode = "tail",
         tail_chapter_count: int = 10,
+        adaptation_config: Optional[AdaptationConfig] = None,
     ) -> BookImportTaskCreateResponse:
         normalized_tail_count = max(5, int(tail_chapter_count))
-        normalized_extract_mode = extract_mode
-        if normalized_tail_count % 5 != 0:
-            normalized_tail_count = ((normalized_tail_count + 4) // 5) * 5
-        if normalized_tail_count > 50:
-            normalized_extract_mode = "full"
+        normalized_extract_mode = "full" if workflow_mode == "adaptation" else extract_mode
+        if workflow_mode != "adaptation":
+            if normalized_tail_count % 5 != 0:
+                normalized_tail_count = ((normalized_tail_count + 4) // 5) * 5
+            if normalized_tail_count > 50:
+                normalized_extract_mode = "full"
 
         task_id = str(uuid.uuid4())
         task = _BookImportTask(
@@ -116,14 +125,16 @@ class BookImportService:
             project_id=project_id,
             create_new_project=create_new_project,
             import_mode=import_mode,
+            workflow_mode=workflow_mode,
             extract_mode=normalized_extract_mode,
             tail_chapter_count=normalized_tail_count,
+            adaptation_config=adaptation_config,
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
 
         asyncio.create_task(self._run_pipeline(task_id=task_id, file_content=file_content))
-        return BookImportTaskCreateResponse(task_id=task_id, status="pending")
+        return BookImportTaskCreateResponse(task_id=task_id, status="pending", workflow_mode=workflow_mode)
 
     async def get_task_status(self, *, task_id: str, user_id: str) -> BookImportTaskStatusResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
@@ -196,37 +207,49 @@ class BookImportService:
                 import_mode=payload.import_mode,
             )
             statistics["outlines"] = len(outlines_to_import)
-
-            chapter_count, words_delta = await self._import_chapters(
-                db=db,
-                project_id=project.id,
-                chapters=chapters_to_import,
-                outline_id_map=outline_id_map,
-                import_mode=payload.import_mode,
-            )
-            statistics["chapters"] = chapter_count
-
-            if payload.import_mode == "overwrite":
-                project.current_words = words_delta
+            if task.workflow_mode == "adaptation":
+                await self._create_adaptation_project(
+                    db=db,
+                    project=project,
+                    task=task,
+                    source_chapters=chapters_to_import,
+                    planned_outline_count=len(outlines_to_import),
+                )
+                next_route = f"/project/{project.id}/outline"
             else:
-                project.current_words = (project.current_words or 0) + words_delta
+                chapter_count, words_delta = await self._import_chapters(
+                    db=db,
+                    project_id=project.id,
+                    chapters=chapters_to_import,
+                    outline_id_map=outline_id_map,
+                    import_mode=payload.import_mode,
+                )
+                statistics["chapters"] = chapter_count
 
-            # 基于基础信息执行"向导前3步"（先生成世界观 -> 生成职业 -> 生成角色/组织），不生成大纲
-            generated_world, generated_careers, generated_entities = await self._run_post_import_wizard_generation(
-                db=db,
-                user_id=user_id,
-                project=project,
-                character_count=max(project.character_count or 0, 8),
-            )
-            statistics["generated_world_building"] = generated_world
-            statistics["generated_careers"] = generated_careers
-            statistics["generated_entities"] = generated_entities
+                if payload.import_mode == "overwrite":
+                    project.current_words = words_delta
+                else:
+                    project.current_words = (project.current_words or 0) + words_delta
+
+                # 基于基础信息执行"向导前3步"（先生成世界观 -> 生成职业 -> 生成角色/组织），不生成大纲
+                generated_world, generated_careers, generated_entities = await self._run_post_import_wizard_generation(
+                    db=db,
+                    user_id=user_id,
+                    project=project,
+                    character_count=max(project.character_count or 0, 8),
+                )
+                statistics["generated_world_building"] = generated_world
+                statistics["generated_careers"] = generated_careers
+                statistics["generated_entities"] = generated_entities
+                next_route = f"/project/{project.id}/chapters"
 
             await db.commit()
 
             return BookImportApplyResponse(
                 success=True,
                 project_id=project.id,
+                workflow_mode=task.workflow_mode,
+                next_route=next_route,
                 statistics=statistics,
                 warnings=warnings,
             )
@@ -307,99 +330,110 @@ class BookImportService:
             )
             statistics["outlines"] = len(outlines_to_import)
             await _notify(f"已导入 {len(outlines_to_import)} 个大纲", 10)
-
-            # -- 步骤3: 导入章节 (10-20%)
-            await _notify(f"正在导入 {len(chapters_to_import)} 个章节...", 12)
-            chapter_count, words_delta = await self._import_chapters(
-                db=db,
-                project_id=project.id,
-                chapters=chapters_to_import,
-                outline_id_map=outline_id_map,
-                import_mode=payload.import_mode,
-            )
-            statistics["chapters"] = chapter_count
-
-            if payload.import_mode == "overwrite":
-                project.current_words = words_delta
-            else:
-                project.current_words = (project.current_words or 0) + words_delta
-            await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）", 20)
-
-            # -- 步骤4: 生成世界观 (20-40%)
             failed_steps: list[_StepFailure] = []
-
-            await _notify("🌍 正在生成世界观...", 22)
-            try:
-                generated_world = await self._generate_world_building_from_project(
+            if task.workflow_mode == "adaptation":
+                await _notify("改写模式不导入原始正文，正在创建改写工作流...", 20)
+                await self._create_adaptation_project(
                     db=db,
-                    user_id=user_id,
                     project=project,
-                    ai_service=ai_service,
-                    progress_callback=progress_callback,
-                    progress_range=(22, 40),
-                    raise_on_error=True,
+                    task=task,
+                    source_chapters=chapters_to_import,
+                    planned_outline_count=len(outlines_to_import),
                 )
-                statistics["generated_world_building"] = generated_world
-                await _notify("🌍 世界观生成完成", 40)
-            except Exception as exc:
-                logger.warning(f"拆书导入：世界观生成失败（将继续后续步骤）: {exc}")
-                failed_steps.append(_StepFailure(
-                    step_name="world_building",
-                    step_label="世界观生成",
-                    error_message=str(exc),
-                ))
-                await _notify(f"⚠️ 世界观生成失败：{str(exc)[:80]}，将继续后续步骤", 40, "warning")
-
-            # -- 步骤5: 生成职业体系 (40-65%)
-            await _notify("💼 正在生成职业体系...", 42)
-            try:
-                generated_careers = await self._generate_career_system_from_project(
+                await _notify("改写项目已创建，待确认大纲后生成正文", 95)
+                next_route = f"/project/{project.id}/outline"
+            else:
+                # -- 步骤3: 导入章节 (10-20%)
+                await _notify(f"正在导入 {len(chapters_to_import)} 个章节...", 12)
+                chapter_count, words_delta = await self._import_chapters(
                     db=db,
-                    user_id=user_id,
-                    project=project,
-                    ai_service=ai_service,
-                    progress_callback=progress_callback,
-                    progress_range=(42, 65),
+                    project_id=project.id,
+                    chapters=chapters_to_import,
+                    outline_id_map=outline_id_map,
+                    import_mode=payload.import_mode,
                 )
-                statistics["generated_careers"] = generated_careers
-                await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
-            except Exception as exc:
-                logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
-                failed_steps.append(_StepFailure(
-                    step_name="career_system",
-                    step_label="职业体系生成",
-                    error_message=str(exc),
-                ))
-                await _notify(f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning")
+                statistics["chapters"] = chapter_count
 
-            # -- 步骤6: 生成角色/组织 (65-92%)
-            character_count_target = max(project.character_count or 0, 5)
-            await _notify("👥 正在生成角色与组织...", 67)
-            try:
-                generated_entities = await self._generate_characters_and_organizations_from_project(
-                    db=db,
-                    user_id=user_id,
-                    project=project,
-                    count=character_count_target,
-                    ai_service=ai_service,
-                    progress_callback=progress_callback,
-                    progress_range=(67, 92),
-                )
-                statistics["generated_entities"] = generated_entities
-                await _notify(f"👥 角色/组织生成完成（{generated_entities}个）", 92)
-            except Exception as exc:
-                logger.warning(f"拆书导入：角色/组织生成失败: {exc}")
-                failed_steps.append(_StepFailure(
-                    step_name="characters",
-                    step_label="角色与组织生成",
-                    error_message=str(exc),
-                ))
-                await _notify(f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning")
+                if payload.import_mode == "overwrite":
+                    project.current_words = words_delta
+                else:
+                    project.current_words = (project.current_words or 0) + words_delta
+                await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）", 20)
 
-            # 标记向导完成并将项目置为创作中
-            project.wizard_step = 3
-            project.wizard_status = "completed"
-            project.status = "writing"
+                # -- 步骤4: 生成世界观 (20-40%)
+                await _notify("🌍 正在生成世界观...", 22)
+                try:
+                    generated_world = await self._generate_world_building_from_project(
+                        db=db,
+                        user_id=user_id,
+                        project=project,
+                        ai_service=ai_service,
+                        progress_callback=progress_callback,
+                        progress_range=(22, 40),
+                        raise_on_error=True,
+                    )
+                    statistics["generated_world_building"] = generated_world
+                    await _notify("🌍 世界观生成完成", 40)
+                except Exception as exc:
+                    logger.warning(f"拆书导入：世界观生成失败（将继续后续步骤）: {exc}")
+                    failed_steps.append(_StepFailure(
+                        step_name="world_building",
+                        step_label="世界观生成",
+                        error_message=str(exc),
+                    ))
+                    await _notify(f"⚠️ 世界观生成失败：{str(exc)[:80]}，将继续后续步骤", 40, "warning")
+
+                # -- 步骤5: 生成职业体系 (40-65%)
+                await _notify("💼 正在生成职业体系...", 42)
+                try:
+                    generated_careers = await self._generate_career_system_from_project(
+                        db=db,
+                        user_id=user_id,
+                        project=project,
+                        ai_service=ai_service,
+                        progress_callback=progress_callback,
+                        progress_range=(42, 65),
+                    )
+                    statistics["generated_careers"] = generated_careers
+                    await _notify(f"💼 职业体系生成完成（{generated_careers}个）", 65)
+                except Exception as exc:
+                    logger.warning(f"拆书导入：职业体系生成失败（将继续后续步骤）: {exc}")
+                    failed_steps.append(_StepFailure(
+                        step_name="career_system",
+                        step_label="职业体系生成",
+                        error_message=str(exc),
+                    ))
+                    await _notify(f"⚠️ 职业体系生成失败：{str(exc)[:80]}，将继续后续步骤", 65, "warning")
+
+                # -- 步骤6: 生成角色/组织 (65-92%)
+                character_count_target = max(project.character_count or 0, 5)
+                await _notify("👥 正在生成角色与组织...", 67)
+                try:
+                    generated_entities = await self._generate_characters_and_organizations_from_project(
+                        db=db,
+                        user_id=user_id,
+                        project=project,
+                        count=character_count_target,
+                        ai_service=ai_service,
+                        progress_callback=progress_callback,
+                        progress_range=(67, 92),
+                    )
+                    statistics["generated_entities"] = generated_entities
+                    await _notify(f"👥 角色/组织生成完成（{generated_entities}个）", 92)
+                except Exception as exc:
+                    logger.warning(f"拆书导入：角色/组织生成失败: {exc}")
+                    failed_steps.append(_StepFailure(
+                        step_name="characters",
+                        step_label="角色与组织生成",
+                        error_message=str(exc),
+                    ))
+                    await _notify(f"⚠️ 角色/组织生成失败：{str(exc)[:80]}", 92, "warning")
+
+                # 标记向导完成并将项目置为创作中
+                project.wizard_step = 3
+                project.wizard_status = "completed"
+                project.status = "writing"
+                next_route = f"/project/{project.id}/chapters"
 
             # -- 步骤7: 提交数据库 (92-98%)
             await _notify("正在保存到数据库...", 95)
@@ -432,6 +466,8 @@ class BookImportService:
             return BookImportApplyResponse(
                 success=True,
                 project_id=project.id,
+                workflow_mode=task.workflow_mode,
+                next_route=next_route,
                 statistics=statistics,
                 warnings=warnings,
             )
@@ -665,6 +701,7 @@ class BookImportService:
         )
 
         if task.create_new_project:
+            is_adaptation = task.workflow_mode == "adaptation"
             project = Project(
                 user_id=user_id,
                 title=suggestion.title,
@@ -672,9 +709,9 @@ class BookImportService:
                 theme=suggestion.theme,
                 genre=suggestion.genre,
                 status="planning",
-                wizard_status="incomplete",
-                wizard_step=1,
-                outline_mode="one-to-one",
+                wizard_status="completed" if is_adaptation else "incomplete",
+                wizard_step=4 if is_adaptation else 1,
+                outline_mode="one-to-many" if is_adaptation else "one-to-one",
                 current_words=0,
                 target_words=max(1000, int(suggestion.target_words or 100000)),
                 narrative_perspective=(suggestion.narrative_perspective or "第三人称")[:50],
@@ -709,6 +746,41 @@ class BookImportService:
 
         await self._ensure_project_default_style(db=db, project_id=project.id)
         return project
+
+    async def _create_adaptation_project(
+        self,
+        *,
+        db: AsyncSession,
+        project: Project,
+        task: _BookImportTask,
+        source_chapters: list[BookImportChapter],
+        planned_outline_count: int,
+    ) -> AdaptationProject:
+        existing = await AdaptationService.get_state(db, project.id)
+        if existing:
+            await db.delete(existing)
+            await db.flush()
+
+        config = task.adaptation_config or AdaptationConfig()
+        state = AdaptationProject(
+            project_id=project.id,
+            workflow_mode="adaptation",
+            workflow_status="planning",
+            source_filename=task.filename,
+            source_chapter_count=len(source_chapters),
+            source_word_count=sum(len((chapter.content or "").strip()) for chapter in source_chapters),
+            planned_outline_count=planned_outline_count,
+            target_age=config.target_age,
+            enforce_chronological=config.enforce_chronological,
+            strict_fidelity=config.strict_fidelity,
+            compress_romance=config.compress_romance,
+            outline_batch_size=config.outline_batch_size,
+        )
+        db.add(state)
+        project.status = "planning"
+        project.chapter_count = 0
+        project.current_words = 0
+        return state
 
     async def _clear_project_data(self, *, db: AsyncSession, project_id: str) -> None:
         await db.execute(delete(Foreshadow).where(Foreshadow.project_id == project_id))
@@ -1130,6 +1202,7 @@ class BookImportService:
 
         return BookImportPreviewResponse(
             task_id=task_id,
+            workflow_mode=task.workflow_mode,
             project_suggestion=suggestion,
             chapters=chapters,
             outlines=outlines,
@@ -1272,7 +1345,11 @@ class BookImportService:
                 title=chapter.title,
                 content=(chapter.summary or self._build_summary(chapter.content or "")),
                 order_index=chapter.chapter_number,
-                structure=self._build_fallback_outline_structure(chapter),
+                structure=(
+                    self._build_adaptation_fallback_outline_structure(chapter)
+                    if task and task.workflow_mode == "adaptation"
+                    else self._build_fallback_outline_structure(chapter)
+                ),
             )
             for chapter in chapters
         ]
@@ -1321,6 +1398,8 @@ class BookImportService:
                         expected_count=expected_count,
                         chapters_text=chapters_text,
                     )
+                    if task and task.workflow_mode == "adaptation":
+                        prompt = self._build_adaptation_outline_prompt(prompt, task)
 
                     ai_data = await ai_service.call_with_json_retry(
                         prompt=prompt,
@@ -1335,7 +1414,11 @@ class BookImportService:
                         f"反向大纲数量与章节数量不一致，回退校正: outlines={len(all_structures)}, chapters={len(chapters)}"
                     )
                     all_structures = [
-                        self._build_fallback_outline_structure(chapter)
+                        (
+                            self._build_adaptation_fallback_outline_structure(chapter)
+                            if task and task.workflow_mode == "adaptation"
+                            else self._build_fallback_outline_structure(chapter)
+                        )
                         for chapter in chapters
                     ]
 
@@ -1462,6 +1545,48 @@ class BookImportService:
             ],
             "emotion": "紧张递进",
             "goal": "承接前章并推动后续剧情发展",
+        }
+
+    def _build_adaptation_outline_prompt(self, base_prompt: str, task: _BookImportTask) -> str:
+        config = task.adaptation_config or AdaptationConfig()
+        romance_rule = (
+            "可以适度压缩情爱描写，但不得删除会影响人物关系判断的内容。"
+            if config.compress_romance
+            else "保留原有人物情感推进，不主动压缩。"
+        )
+        return (
+            "【改编规划任务】\n"
+            "你正在把一部已有原著改写成适合约12岁读者阅读的版本，但必须保持原著核心事件、人物关系逻辑与结局一致。\n"
+            f"- 目标年龄：{config.target_age}岁左右\n"
+            f"- {'按故事时间顺序重新组织章节' if config.enforce_chronological else '不强制重排时间顺序'}\n"
+            f"- {'关键情节、关系走向、结局不得改动' if config.strict_fidelity else '尽量保持关键情节与结局一致'}\n"
+            f"- {romance_rule}\n"
+            "- 可以拆分或合并章节，但不得新增原著不存在的关键事件或改变事件结果。\n"
+            "- 标题、大纲语言要更直白、适合未成年人阅读，避免成人化表达。\n"
+            "- 你只需规划当前这一批章节，不能在这次输出中试图规划整本书的全部结构。\n\n"
+            f"{base_prompt}"
+        )
+
+    def _build_adaptation_fallback_outline_structure(self, chapter: BookImportChapter) -> dict[str, Any]:
+        summary = (chapter.summary or self._build_summary(chapter.content or "")).strip()
+        if not summary:
+            summary = "本章围绕原著中的关键事件推进故事。"
+
+        return {
+            "chapter_number": chapter.chapter_number,
+            "title": chapter.title,
+            "summary": summary[:1200],
+            "scenes": [
+                "按照故事发生先后交代本章关键事件",
+                "保留会影响人物关系和后续结果的重要信息",
+            ],
+            "characters": [],
+            "key_points": [
+                "保持原著关键事件与结果不变",
+                "用更直白易读的语言概括本章内容",
+            ],
+            "emotion": "清晰克制",
+            "goal": "在不改变剧情结果的前提下完成适龄化改写规划",
         }
 
     def _build_fallback_project_suggestion(
@@ -2254,6 +2379,7 @@ class BookImportService:
         return BookImportTaskStatusResponse(
             task_id=task.task_id,
             status=task.status,  # type: ignore[arg-type]
+            workflow_mode=task.workflow_mode,
             progress=task.progress,
             message=task.message,
             error=task.error,

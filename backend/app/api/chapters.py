@@ -24,6 +24,7 @@ from app.models.relationship import CharacterRelationship, Organization, Organiz
 from app.models.generation_history import GenerationHistory
 from app.models.writing_style import WritingStyle
 from app.models.analysis_task import AnalysisTask
+from app.models.adaptation_project import AdaptationProject
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.batch_generation_task import BatchGenerationTask
 from app.models.regeneration_task import RegenerationTask
@@ -56,6 +57,7 @@ from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
+from app.services.adaptation_service import AdaptationService
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import SSEResponse, create_sse_response
@@ -73,6 +75,29 @@ async def get_db_write_lock(user_id: str) -> Lock:
         db_write_locks[user_id] = Lock()
         logger.debug(f"🔒 为用户 {user_id} 创建数据库写入锁")
     return db_write_locks[user_id]
+
+
+async def _get_adaptation_state(
+    db: AsyncSession,
+    *,
+    project_id: str,
+) -> Optional[AdaptationProject]:
+    return await AdaptationService.get_state(db, project_id)
+
+
+def _get_adaptation_generation_block_reason(state: Optional[AdaptationProject]) -> Optional[str]:
+    if not state:
+        return None
+    if state.workflow_status == "planning":
+        return "改编项目需先确认大纲并物化占位章节后才能生成正文"
+    return None
+
+
+def _apply_adaptation_prompt(base_prompt: str, state: Optional[AdaptationProject]) -> str:
+    instruction_block = AdaptationService.build_instruction_block(state)
+    if not instruction_block:
+        return base_prompt
+    return f"{instruction_block}\n{base_prompt}"
 
 
 @router.post("", response_model=ChapterResponse, summary="创建章节")
@@ -188,6 +213,16 @@ async def get_chapter(
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(chapter.project_id, user_id, db)
+
+    adaptation_state = await _get_adaptation_state(db, project_id=chapter.project_id)
+    adaptation_reason = _get_adaptation_generation_block_reason(adaptation_state)
+    if adaptation_reason:
+        return {
+            "can_generate": False,
+            "reason": adaptation_reason,
+            "previous_chapters": [],
+            "chapter_number": chapter.chapter_number
+        }
     
     return chapter
 
@@ -1415,6 +1450,12 @@ async def generate_chapter_content_stream(
                 if not project:
                     yield await tracker.error("项目不存在", 404)
                     return
+
+                adaptation_state = await _get_adaptation_state(db_session, project_id=project.id)
+                adaptation_reason = _get_adaptation_generation_block_reason(adaptation_state)
+                if adaptation_reason:
+                    yield await tracker.error(adaptation_reason, 400)
+                    return
                 
                 # 获取项目的大纲模式
                 outline_mode = project.outline_mode if project else 'one-to-many'
@@ -1618,6 +1659,7 @@ async def generate_chapter_content_stream(
                     prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
                 else:
                     prompt = base_prompt
+                prompt = _apply_adaptation_prompt(prompt, adaptation_state)
                 
                 # === 准备阶段 ===
                 yield await tracker.preparing("准备AI提示词...")
@@ -1697,6 +1739,11 @@ async def generate_chapter_content_stream(
                 
                 # 更新项目字数
                 project.current_words = project.current_words - old_word_count + new_word_count
+                await AdaptationService.mark_generation_started(
+                    db_session,
+                    state=adaptation_state,
+                    project=project,
+                )
                 
                 # 记录生成历史
                 history = GenerationHistory(
@@ -1849,6 +1896,10 @@ async def generate_chapter_content_background(
 
     # 验证项目权限
     project = await verify_project_access(chapter.project_id, user_id, db)
+    adaptation_state = await _get_adaptation_state(db, project_id=project.id)
+    adaptation_reason = _get_adaptation_generation_block_reason(adaptation_state)
+    if adaptation_reason:
+        raise HTTPException(status_code=400, detail=adaptation_reason)
 
     # 检查前置条件
     can_generate, error_msg, _ = await check_prerequisites(db, chapter)
@@ -1961,6 +2012,12 @@ async def _run_chapter_generation_bg(
     project = project_result.scalar_one_or_none()
     if not project:
         await tracker.error("项目不存在")
+        return
+
+    adaptation_state = await _get_adaptation_state(db, project_id=project.id)
+    adaptation_reason = _get_adaptation_generation_block_reason(adaptation_state)
+    if adaptation_reason:
+        await tracker.error(adaptation_reason)
         return
 
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -2106,6 +2163,7 @@ async def _run_chapter_generation_bg(
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
+    prompt = _apply_adaptation_prompt(prompt, adaptation_state)
 
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
@@ -2935,6 +2993,10 @@ async def batch_generate_chapters_in_order(
     
     # 验证项目存在和用户权限
     project = await verify_project_access(project_id, user_id, db)
+    adaptation_state = await _get_adaptation_state(db, project_id=project.id)
+    adaptation_reason = _get_adaptation_generation_block_reason(adaptation_state)
+    if adaptation_reason:
+        raise HTTPException(status_code=400, detail=adaptation_reason)
     
     # 获取项目的所有章节，按序号排序
     result = await db.execute(
@@ -3433,6 +3495,7 @@ async def generate_single_chapter_for_batch(
     project = project_result.scalar_one_or_none()
     if not project:
         raise Exception("项目不存在")
+    adaptation_state = await _get_adaptation_state(db_session, project_id=project.id)
     
     # 获取项目的大纲模式
     outline_mode = project.outline_mode if project else 'one-to-many'
@@ -3596,6 +3659,7 @@ async def generate_single_chapter_for_batch(
         prompt = WritingStyleManager.apply_style_to_prompt(base_prompt, style_content)
     else:
         prompt = base_prompt
+    prompt = _apply_adaptation_prompt(prompt, adaptation_state)
     
     # 🎨 方案一：将写作风格注入到系统提示词（批量生成）
     system_prompt_with_style = None
@@ -3643,6 +3707,11 @@ async def generate_single_chapter_for_batch(
         
         # 更新项目字数
         project.current_words = project.current_words - old_word_count + new_word_count
+        await AdaptationService.mark_generation_started(
+            db_session,
+            state=adaptation_state,
+            project=project,
+        )
         
         # 记录生成历史
         history = GenerationHistory(
@@ -3745,6 +3814,7 @@ async def regenerate_chapter_stream(
                 select(Project).where(Project.id == chapter.project_id)
             )
             project = project_result.scalar_one_or_none()
+            adaptation_state = await _get_adaptation_state(temp_db, project_id=chapter.project_id)
             
             # 获取角色信息（包含职业信息）
             characters_result = await temp_db.execute(
@@ -3859,7 +3929,8 @@ async def regenerate_chapter_stream(
                 'atmosphere': project.world_atmosphere if project else '未设定',
                 'characters_info': characters_info_with_careers,
                 'chapter_outline': outline.content if outline else chapter.summary or '暂无大纲',
-                'previous_context': ''  # 可以后续扩展添加前置章节上下文
+                'previous_context': '',  # 可以后续扩展添加前置章节上下文
+                'adaptation_instructions': AdaptationService.build_instruction_block(adaptation_state),
             }
         finally:
             await temp_db.close()
@@ -4486,4 +4557,3 @@ async def apply_partial_regenerate(
         "old_word_count": old_word_count,
         "message": "局部重写已应用"
     }
-

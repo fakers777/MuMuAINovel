@@ -27,11 +27,13 @@ import type { UploadFile } from 'antd/es/upload/interface';
 import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined } from '@ant-design/icons';
 import { bookImportApi } from '../services/api';
 import type {
+  AdaptationConfig,
   BookImportApplyPayload,
   BookImportExtractMode,
   BookImportPreview,
   BookImportStepFailure,
   BookImportTask,
+  BookImportWorkflowMode,
 } from '../types';
 
 const { Text, Title } = Typography;
@@ -48,9 +50,19 @@ type BookImportPageCache = {
   applyMessage: string;
   applyError: string | null;
   isApplyComplete: boolean;
+  workflowMode: BookImportWorkflowMode;
+  adaptationConfig: AdaptationConfig;
   extractMode: BookImportExtractMode;
   tailChapterCount: number;
   cachedAt: number;
+};
+
+const DEFAULT_ADAPTATION_CONFIG: AdaptationConfig = {
+  target_age: 12,
+  enforce_chronological: true,
+  strict_fidelity: true,
+  compress_romance: true,
+  outline_batch_size: 5,
 };
 
 function loadBookImportCache(): BookImportPageCache | null {
@@ -114,6 +126,8 @@ export default function BookImport() {
   const { token } = theme.useToken();
   const isMobile = window.innerWidth <= 768;
   const [file, setFile] = useState<File | null>(null);
+  const [workflowMode, setWorkflowMode] = useState<BookImportWorkflowMode>('standard');
+  const [adaptationConfig, setAdaptationConfig] = useState<AdaptationConfig>(DEFAULT_ADAPTATION_CONFIG);
   const [extractMode, setExtractMode] = useState<BookImportExtractMode>('tail');
   const [tailChapterCount, setTailChapterCount] = useState(10);
 
@@ -136,6 +150,7 @@ export default function BookImport() {
   const [retryProgress, setRetryProgress] = useState(0);
   const [retryMessage, setRetryMessage] = useState('');
   const importedProjectId = useRef<string | null>(null);
+  const nextRouteRef = useRef<string | null>(null);
 
   const isTaskTerminal = useMemo(() => {
     return !!taskStatus && ['completed', 'failed', 'cancelled'].includes(taskStatus.status);
@@ -210,6 +225,8 @@ export default function BookImport() {
         setApplyProgress(cache.applyProgress);
         setApplyError(cache.applyError);
         setIsApplyComplete(cache.isApplyComplete);
+        setWorkflowMode(cache.workflowMode ?? 'standard');
+        setAdaptationConfig(cache.adaptationConfig ?? DEFAULT_ADAPTATION_CONFIG);
         setExtractMode(cache.extractMode ?? 'tail');
         setTailChapterCount(cache.tailChapterCount ?? 10);
         setApplyMessage(
@@ -256,6 +273,8 @@ export default function BookImport() {
       applyMessage,
       applyError,
       isApplyComplete,
+      workflowMode,
+      adaptationConfig,
       extractMode,
       tailChapterCount,
       cachedAt: Date.now(),
@@ -269,9 +288,27 @@ export default function BookImport() {
     applyMessage,
     applyError,
     isApplyComplete,
+    workflowMode,
+    adaptationConfig,
     extractMode,
     tailChapterCount,
   ]);
+
+  const navigateToImportedProject = useCallback((projectId: string, nextRoute?: string | null) => {
+    if (!projectId) return;
+
+    if (!nextRoute) {
+      navigate(`/project/${projectId}/chapters`);
+      return;
+    }
+
+    if (nextRoute.startsWith('/')) {
+      navigate(nextRoute);
+      return;
+    }
+
+    navigate(`/project/${projectId}/${nextRoute.replace(/^\/+/, '')}`);
+  }, [navigate]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -348,8 +385,10 @@ export default function BookImport() {
 
       const response = await bookImportApi.createTask({
         file,
+        workflow_mode: workflowMode,
         extract_mode: effectiveExtractMode,
         tail_chapter_count: normalizedTailChapterCount,
+        adaptation_config: workflowMode === 'adaptation' ? adaptationConfig : undefined,
       });
 
       setTaskId(response.task_id);
@@ -435,6 +474,7 @@ export default function BookImport() {
           },
           onResult: (result) => {
             importedProjectId.current = result.project_id;
+            nextRouteRef.current = result.next_route ?? null;
             const generatedCareers = result.statistics?.generated_careers ?? 0;
             const generatedEntities = result.statistics?.generated_entities ?? 0;
 
@@ -449,7 +489,7 @@ export default function BookImport() {
                   message.success(`导入成功：已生成职业${generatedCareers}个，角色/组织${generatedEntities}个`);
                   clearBookImportCache();
                   setTimeout(() => {
-                    navigate(`/project/${result.project_id}/chapters`);
+                    navigateToImportedProject(result.project_id, result.next_route);
                   }, 1000);
                 } else {
                   message.warning(`导入完成，但有 ${prev.length} 个生成步骤失败，可点击重试`);
@@ -518,7 +558,7 @@ export default function BookImport() {
               const projectId = result.project_id || importedProjectId.current;
               if (projectId) {
                 setTimeout(() => {
-                  navigate(`/project/${projectId}/chapters`);
+                  navigateToImportedProject(projectId, nextRouteRef.current);
                 }, 1000);
               }
             }
@@ -539,7 +579,7 @@ export default function BookImport() {
       message.error('重试请求失败，无法连接到服务器');
       setRetrying(false);
     }
-  }, [taskId, failedSteps, navigate]);
+  }, [taskId, failedSteps, navigateToImportedProject]);
 
   const skipFailedSteps = useCallback(() => {
     setFailedSteps([]);
@@ -547,13 +587,14 @@ export default function BookImport() {
     const projectId = importedProjectId.current;
     if (projectId) {
       message.info('已跳过失败步骤，正在跳转到项目...');
-      navigate(`/project/${projectId}/chapters`);
+      navigateToImportedProject(projectId, nextRouteRef.current);
     }
-  }, [navigate]);
+  }, [navigateToImportedProject]);
 
   const restartImport = useCallback(() => {
     clearBookImportCache();
     importedProjectId.current = null;
+    nextRouteRef.current = null;
 
     setFile(null);
     setTaskId(null);
@@ -572,6 +613,8 @@ export default function BookImport() {
     setRetrying(false);
     setRetryProgress(0);
     setRetryMessage('');
+    setWorkflowMode('standard');
+    setAdaptationConfig(DEFAULT_ADAPTATION_CONFIG);
     setExtractMode('tail');
     setTailChapterCount(10);
 
@@ -718,6 +761,74 @@ export default function BookImport() {
 
           <Card size="small" title="解析范围设置">
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <Select
+                value={workflowMode}
+                onChange={(value) => setWorkflowMode(value)}
+                options={[
+                  { label: '标准导入', value: 'standard' },
+                  { label: '改编导入', value: 'adaptation' },
+                ]}
+                style={{ width: '100%' }}
+                disabled={rangeLocked}
+              />
+              {workflowMode === 'adaptation' && (
+                <Card size="small" type="inner" title="改编配置">
+                  <Row gutter={[12, 12]}>
+                    <Col xs={24} md={12}>
+                      <Text>目标阅读年龄</Text>
+                      <InputNumber
+                        min={8}
+                        max={18}
+                        precision={0}
+                        value={adaptationConfig.target_age}
+                        disabled={rangeLocked}
+                        onChange={(value) => setAdaptationConfig((prev) => ({
+                          ...prev,
+                          target_age: typeof value === 'number' ? value : DEFAULT_ADAPTATION_CONFIG.target_age,
+                        }))}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col xs={24} md={12}>
+                      <Text>每批规划大纲数</Text>
+                      <InputNumber
+                        min={1}
+                        max={20}
+                        precision={0}
+                        value={adaptationConfig.outline_batch_size}
+                        disabled={rangeLocked}
+                        onChange={(value) => setAdaptationConfig((prev) => ({
+                          ...prev,
+                          outline_batch_size: typeof value === 'number' ? value : DEFAULT_ADAPTATION_CONFIG.outline_batch_size,
+                        }))}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col xs={24}>
+                      <Space wrap>
+                        <Tag.CheckableTag
+                          checked={adaptationConfig.enforce_chronological}
+                          onChange={(checked) => setAdaptationConfig((prev) => ({ ...prev, enforce_chronological: checked }))}
+                        >
+                          保持时间顺序
+                        </Tag.CheckableTag>
+                        <Tag.CheckableTag
+                          checked={adaptationConfig.strict_fidelity}
+                          onChange={(checked) => setAdaptationConfig((prev) => ({ ...prev, strict_fidelity: checked }))}
+                        >
+                          严格保留关键情节
+                        </Tag.CheckableTag>
+                        <Tag.CheckableTag
+                          checked={adaptationConfig.compress_romance}
+                          onChange={(checked) => setAdaptationConfig((prev) => ({ ...prev, compress_romance: checked }))}
+                        >
+                          压缩情爱描写
+                        </Tag.CheckableTag>
+                      </Space>
+                    </Col>
+                  </Row>
+                </Card>
+              )}
               {rangeLocked && (
                 <Alert
                   type="warning"
@@ -748,7 +859,9 @@ export default function BookImport() {
                 style={{ width: '100%' }}
               />
               <Text type="secondary">
-                {effectiveExtractMode === 'tail'
+                {workflowMode === 'adaptation'
+                  ? '改编导入会进入改编大纲工作流；导入完成后按后端返回的 next_route 自动跳转。'
+                  : effectiveExtractMode === 'tail'
                   ? `当前将截取末 ${normalizedTailChapterCount} 章进行反向生成；章节数必须为 5 的倍数，最多 50 章。`
                   : extractMode === 'tail' && tailChapterCount > 50
                     ? '当前输入已超过 50 章，将自动按整本拆处理。'
@@ -885,6 +998,15 @@ export default function BookImport() {
                 size="small"
                 title="项目信息"
               >
+                {preview.workflow_mode === 'adaptation' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="当前为改编导入预览"
+                    description="确认导入后会先进入改编大纲确认阶段；需要先确认大纲并物化占位章节，再开始生成正文。"
+                  />
+                )}
                 <Row gutter={12}>
                   <Col xs={24} md={12}>
                     <Text>标题</Text>

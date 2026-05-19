@@ -191,7 +191,7 @@ class ChapterRegenerator:
         """构建完整的重新生成提示词"""
         # 使用PromptService的get_chapter_regeneration_prompt方法
         # 该方法会处理自定义模板加载和完整提示词构建
-        return await PromptService.get_chapter_regeneration_prompt(
+        prompt = await PromptService.get_chapter_regeneration_prompt(
             chapter_number=chapter.chapter_number,
             title=chapter.title,
             word_count=chapter.word_count,
@@ -203,6 +203,10 @@ class ChapterRegenerator:
             user_id=user_id,
             db=db
         )
+        adaptation_instructions = (project_context or {}).get("adaptation_instructions") or ""
+        if adaptation_instructions:
+            return f"{adaptation_instructions}\n{prompt}"
+        return prompt
     
     def calculate_content_diff(
         self,

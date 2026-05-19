@@ -61,6 +61,9 @@ import type {
   BookImportCreateTaskPayload,
   BookImportResult,
   BookImportRetryResult,
+  AdaptationState,
+  ConfirmAdaptationOutlinesResponse,
+  ReopenAdaptationPlanResponse,
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
@@ -470,10 +473,19 @@ export const bookImportApi = {
     const formData = new FormData();
     formData.append('file', params.file);
     const tailChapterCount = params.tail_chapter_count ?? 10;
-    formData.append('extract_mode', params.extract_mode ?? 'tail');
+    const workflowMode = params.workflow_mode ?? 'standard';
+    formData.append('workflow_mode', workflowMode);
+    formData.append('extract_mode', workflowMode === 'adaptation' ? 'full' : (params.extract_mode ?? 'tail'));
     formData.append('tail_chapter_count', String(tailChapterCount));
+    if (params.adaptation_config) {
+      formData.append('target_age', String(params.adaptation_config.target_age));
+      formData.append('enforce_chronological', String(params.adaptation_config.enforce_chronological));
+      formData.append('strict_fidelity', String(params.adaptation_config.strict_fidelity));
+      formData.append('compress_romance', String(params.adaptation_config.compress_romance));
+      formData.append('outline_batch_size', String(params.adaptation_config.outline_batch_size));
+    }
 
-    return api.post<unknown, { task_id: string; status: BookImportTask['status'] }>(
+    return api.post<unknown, { task_id: string; status: BookImportTask['status']; workflow_mode: BookImportTask['workflow_mode'] }>(
       '/book-import/tasks',
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
@@ -511,6 +523,17 @@ export const bookImportApi = {
 
   cancelTask: (taskId: string) =>
     api.delete<unknown, { success: boolean; message: string }>(`/book-import/tasks/${taskId}`),
+};
+
+export const adaptationApi = {
+  getState: (projectId: string) =>
+    api.get<unknown, AdaptationState>(`/adaptation/projects/${projectId}`),
+
+  confirmOutlines: (projectId: string) =>
+    api.post<unknown, ConfirmAdaptationOutlinesResponse>(`/adaptation/projects/${projectId}/confirm-outlines`),
+
+  reopenPlan: (projectId: string) =>
+    api.post<unknown, ReopenAdaptationPlanResponse>(`/adaptation/projects/${projectId}/reopen-plan`),
 };
 
 export const outlineApi = {

@@ -1001,6 +1001,50 @@ export interface ForeshadowContextResponse {
 export type BookImportTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type BookImportWarningLevel = 'info' | 'warning' | 'error';
 export type BookImportExtractMode = 'tail' | 'full';
+export type BookImportWorkflowMode = 'standard' | 'adaptation';
+
+export interface AdaptationConfig {
+  target_age: number;
+  enforce_chronological: boolean;
+  strict_fidelity: boolean;
+  compress_romance: boolean;
+  outline_batch_size: number;
+}
+
+export interface AdaptationState {
+  project_id: string;
+  workflow_mode: 'adaptation';
+  workflow_status: 'planning' | 'confirmed' | 'materialized' | 'generating' | 'writing';
+  source_filename?: string | null;
+  source_chapter_count: number;
+  source_word_count: number;
+  planned_outline_count: number;
+  target_age: number;
+  enforce_chronological: boolean;
+  strict_fidelity: boolean;
+  compress_romance: boolean;
+  outline_batch_size: number;
+  confirmed_at?: string | null;
+  materialized_at?: string | null;
+  generation_started_at?: string | null;
+  can_confirm: boolean;
+  can_reopen: boolean;
+  has_generated_chapters: boolean;
+}
+
+export interface ConfirmAdaptationOutlinesResponse {
+  success: boolean;
+  project_id: string;
+  chapter_count: number;
+  workflow_status: AdaptationState['workflow_status'];
+}
+
+export interface ReopenAdaptationPlanResponse {
+  success: boolean;
+  project_id: string;
+  workflow_status: AdaptationState['workflow_status'];
+  removed_placeholder_chapters: number;
+}
 
 export interface BookImportWarning {
   code: string;
@@ -1035,6 +1079,7 @@ export interface BookImportOutline {
 export interface BookImportTask {
   task_id: string;
   status: BookImportTaskStatus;
+  workflow_mode?: BookImportWorkflowMode;
   progress: number;
   message?: string;
   error?: string;
@@ -1044,6 +1089,7 @@ export interface BookImportTask {
 
 export interface BookImportPreview {
   task_id: string;
+  workflow_mode?: BookImportWorkflowMode;
   project_suggestion: BookImportProjectSuggestion;
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
@@ -1059,13 +1105,17 @@ export interface BookImportApplyPayload {
 
 export interface BookImportCreateTaskPayload {
   file: File;
+  workflow_mode?: BookImportWorkflowMode;
   extract_mode?: BookImportExtractMode;
   tail_chapter_count?: number;
+  adaptation_config?: AdaptationConfig;
 }
 
 export interface BookImportResult {
   success: boolean;
   project_id: string;
+  workflow_mode?: BookImportWorkflowMode;
+  next_route?: string | null;
   statistics: {
     chapters: number;
     outlines: number;

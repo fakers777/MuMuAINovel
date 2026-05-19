@@ -147,7 +147,7 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, prompt_workshop, book_import,
-    project_covers, tasks, announcements
+    project_covers, tasks, announcements, adaptation
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -173,6 +173,7 @@ app.include_router(prompt_templates.router, prefix="/api")  # 提示词模板管
 app.include_router(changelog.router, prefix="/api")  # 更新日志API
 app.include_router(prompt_workshop.router, prefix="/api")  # 提示词工坊API
 app.include_router(book_import.router, prefix="/api")  # 拆书导入API
+app.include_router(adaptation.router, prefix="/api")  # 改写项目工作流 API
 app.include_router(tasks.router, prefix="/api")  # 后台任务API
 app.include_router(announcements.router, prefix="/api")  # 公告API
 

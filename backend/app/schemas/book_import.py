@@ -10,6 +10,16 @@ ImportMode = Literal["append", "overwrite"]
 ExtractLevel = Literal["basic", "standard", "deep"]
 WarningLevel = Literal["info", "warning", "error"]
 BookImportExtractMode = Literal["tail", "full"]
+BookImportWorkflowMode = Literal["standard", "adaptation"]
+
+
+class AdaptationConfig(BaseModel):
+    """改写模式配置"""
+    target_age: int = Field(default=12, ge=8, le=18, description="目标阅读年龄")
+    enforce_chronological: bool = Field(default=True, description="是否按时间顺序重写")
+    strict_fidelity: bool = Field(default=True, description="是否严格保持关键情节和结局")
+    compress_romance: bool = Field(default=True, description="是否压缩情爱描写但保留关系关键内容")
+    outline_batch_size: int = Field(default=5, ge=1, le=20, description="大纲规划批大小")
 
 
 class BookImportWarning(BaseModel):
@@ -48,20 +58,24 @@ class BookImportOutline(BaseModel):
 
 class BookImportTaskCreateRequest(BaseModel):
     """创建拆书任务请求"""
+    workflow_mode: BookImportWorkflowMode = Field(default="standard", description="工作流模式")
     extract_mode: BookImportExtractMode = Field(default="tail", description="提取范围：tail=截取末章，full=整本")
     tail_chapter_count: int = Field(default=10, ge=5, le=9999, description="当 extract_mode=tail 时，截取末尾章节数；需为5的倍数，超过50将按整本处理")
+    adaptation_config: Optional[AdaptationConfig] = Field(default=None, description="改写模式配置")
 
 
 class BookImportTaskCreateResponse(BaseModel):
     """创建任务响应"""
     task_id: str
     status: TaskStatus
+    workflow_mode: BookImportWorkflowMode = "standard"
 
 
 class BookImportTaskStatusResponse(BaseModel):
     """任务状态响应"""
     task_id: str
     status: TaskStatus
+    workflow_mode: BookImportWorkflowMode = "standard"
     progress: int = Field(..., ge=0, le=100)
     message: Optional[str] = None
     error: Optional[str] = None
@@ -72,6 +86,7 @@ class BookImportTaskStatusResponse(BaseModel):
 class BookImportPreviewResponse(BaseModel):
     """预览数据响应"""
     task_id: str
+    workflow_mode: BookImportWorkflowMode = "standard"
     project_suggestion: ProjectSuggestion
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline]
@@ -90,6 +105,8 @@ class BookImportApplyResponse(BaseModel):
     """确认导入响应"""
     success: bool
     project_id: str
+    workflow_mode: BookImportWorkflowMode = "standard"
+    next_route: Optional[str] = None
     statistics: dict[str, int]
     warnings: list[BookImportWarning] = Field(default_factory=list)
 
