@@ -16,7 +16,7 @@ class AdaptationProject(Base):
         String(30),
         nullable=False,
         default="planning",
-        comment="工作流状态: planning/confirmed/materialized/generating/writing"
+        comment="工作流状态，兼容拆书改写与原著改编双工作流"
     )
 
     source_filename = Column(String(255), nullable=True, comment="原始导入文件名")
@@ -43,7 +43,9 @@ class AdaptationProject(Base):
             name="check_adaptation_workflow_mode",
         ),
         CheckConstraint(
-            "workflow_status IN ('planning', 'confirmed', 'materialized', 'generating', 'writing')",
+            "workflow_status IN ('planning', 'confirmed', 'materialized', 'generating', 'writing', "
+            "'source_uploaded', 'brief_saved', 'batch_planning', 'batch_draft_ready', "
+            "'batch_confirmed', 'batch_generating', 'batch_written')",
             name="check_adaptation_workflow_status",
         ),
         {"extend_existing": True},
