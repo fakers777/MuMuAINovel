@@ -46,6 +46,7 @@ class AdaptationProject(Base):
             "workflow_status IN ('planning', 'confirmed', 'materialized', 'generating', 'writing')",
             name="check_adaptation_workflow_status",
         ),
+        {"extend_existing": True},
     )
 
     def __repr__(self):
