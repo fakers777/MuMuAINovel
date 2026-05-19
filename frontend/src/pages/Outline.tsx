@@ -1,13 +1,13 @@
 ﻿import { useState, useEffect, useMemo } from 'react';
-import { Alert, Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme } from 'antd';
+import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme } from 'antd';
 import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
 import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
-import { useChapterSync, useOutlineSync } from '../store/hooks';
+import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
-import { adaptationApi, outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
-import type { AdaptationState, ApiError, Character } from '../types';
+import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
+import type { ApiError, Character } from '../types';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -107,10 +107,7 @@ const { TextArea } = Input;
 
 export default function Outline() {
   const { currentProject, outlines, setCurrentProject } = useStore();
-  const [adaptationState, setAdaptationState] = useState<AdaptationState | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [adaptationLoading, setAdaptationLoading] = useState(false);
-  const [adaptationSubmitting, setAdaptationSubmitting] = useState(false);
   const [editForm] = Form.useForm();
   const [generateForm] = Form.useForm();
   const [expansionForm] = Form.useForm();
@@ -150,24 +147,6 @@ export default function Outline() {
     updateOutline,
     deleteOutline
   } = useOutlineSync();
-  const { refreshChapters } = useChapterSync();
-
-  const loadAdaptationState = async (projectId: string) => {
-    try {
-      setAdaptationLoading(true);
-      const state = await adaptationApi.getState(projectId);
-      setAdaptationState(state);
-    } catch (error) {
-      const maybeError = error as { response?: { status?: number } };
-      if (maybeError.response?.status === 404) {
-        setAdaptationState(null);
-      } else {
-        console.error('加载改编状态失败:', error);
-      }
-    } finally {
-      setAdaptationLoading(false);
-    }
-  };
 
   // 初始加载大纲列表和角色列表
   useEffect(() => {
@@ -177,7 +156,6 @@ export default function Outline() {
       loadProjectCharacters();
       // 检查是否有活跃的大纲生成任务，恢复按钮禁用状态
       checkActiveOutlineTasks();
-      loadAdaptationState(currentProject.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]); // 只依赖 ID，不依赖函数
@@ -273,15 +251,7 @@ export default function Outline() {
 
   if (!currentProject) return null;
 
-  const isAdaptationProject = adaptationState?.workflow_mode === 'adaptation';
-  const adaptationPlanningLocked = isAdaptationProject && adaptationState.workflow_status !== 'planning';
-  const adaptationLockedReason = '改编项目已确认大纲，当前页面已限制编辑与扩写入口，请到章节页继续推进。';
-
   const handleOpenEditModal = (id: string) => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     const outline = outlines.find(o => o.id === id);
     if (outline) {
       const structureData = outlineStructureMap[outline.id] || {};
@@ -516,10 +486,6 @@ export default function Outline() {
   };
 
   const handleDeleteOutline = async (id: string) => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     try {
       await deleteOutline(id);
       message.success('删除成功');
@@ -548,10 +514,6 @@ export default function Outline() {
   }
 
   const handleGenerate = async (values: GenerateFormValues) => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     try {
       setIsGenerating(true);
 
@@ -625,10 +587,6 @@ export default function Outline() {
   };
 
   const showGenerateModal = async () => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     const hasOutlines = outlines.length > 0;
     const initialMode = hasOutlines ? 'continue' : 'new';
 
@@ -830,10 +788,6 @@ export default function Outline() {
 
   // 手动创建大纲
   const showManualCreateOutlineModal = () => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     const nextOrderIndex = outlines.length > 0
       ? Math.max(...outlines.map(o => o.order_index)) + 1
       : 1;
@@ -939,10 +893,6 @@ export default function Outline() {
 
   // 展开单个大纲为多章 - 提交后台任务并在悬浮任务面板显示进度
   const handleExpandOutline = async (outlineId: string, outlineTitle: string) => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     try {
       setIsExpanding(true);
 
@@ -1391,10 +1341,6 @@ export default function Outline() {
 
   // 批量展开所有大纲 - 提交后台任务并在悬浮任务面板显示进度
   const handleBatchExpandOutlines = () => {
-    if (adaptationPlanningLocked) {
-      message.warning(adaptationLockedReason);
-      return;
-    }
     if (!currentProject?.id || outlines.length === 0) {
       message.warning('没有可展开的大纲');
       return;
@@ -1500,85 +1446,11 @@ export default function Outline() {
     });
   };
 
-  const handleConfirmAdaptationOutlines = async () => {
-    if (!currentProject?.id || !adaptationState?.can_confirm) return;
-    try {
-      setAdaptationSubmitting(true);
-      const result = await adaptationApi.confirmOutlines(currentProject.id);
-      await Promise.all([
-        refreshOutlines(),
-        refreshChapters(),
-        loadAdaptationState(currentProject.id),
-      ]);
-      const updatedProject = await projectApi.getProject(currentProject.id);
-      setCurrentProject(updatedProject);
-      message.success(`已确认大纲并物化 ${result.chapter_count} 个占位章节`);
-    } catch (error) {
-      const apiError = error as ApiError;
-      message.error(apiError.response?.data?.detail || '确认大纲失败');
-    } finally {
-      setAdaptationSubmitting(false);
-    }
-  };
-
-  const handleReopenAdaptationPlan = async () => {
-    if (!currentProject?.id || !adaptationState?.can_reopen) return;
-    try {
-      setAdaptationSubmitting(true);
-      const result = await adaptationApi.reopenPlan(currentProject.id);
-      await Promise.all([
-        refreshOutlines(),
-        refreshChapters(),
-        loadAdaptationState(currentProject.id),
-      ]);
-      const updatedProject = await projectApi.getProject(currentProject.id);
-      setCurrentProject(updatedProject);
-      message.success(`已重开规划并移除 ${result.removed_placeholder_chapters} 个占位章节`);
-    } catch (error) {
-      const apiError = error as ApiError;
-      message.error(apiError.response?.data?.detail || '重开规划失败');
-    } finally {
-      setAdaptationSubmitting(false);
-    }
-  };
-
   return (
     <>
       {contextHolder}
 
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {isAdaptationProject && (
-          <Alert
-            type={adaptationPlanningLocked ? 'info' : 'success'}
-            showIcon
-            style={{ marginBottom: 16 }}
-            message={`改编工作流：${adaptationState?.workflow_status === 'planning' ? '待确认大纲' : adaptationState?.workflow_status === 'materialized' ? '已物化占位章节' : adaptationState?.workflow_status || '进行中'}`}
-            description={(
-              <Space wrap>
-                <span>规划卷数：{adaptationState?.planned_outline_count || outlines.length}</span>
-                <span>源文件章节：{adaptationState?.source_chapter_count || 0}</span>
-                <span>目标年龄：{adaptationState?.target_age || 12}</span>
-                <Button
-                  type="primary"
-                  size="small"
-                  loading={adaptationSubmitting}
-                  disabled={adaptationLoading || !adaptationState?.can_confirm}
-                  onClick={handleConfirmAdaptationOutlines}
-                >
-                  确认大纲
-                </Button>
-                <Button
-                  size="small"
-                  loading={adaptationSubmitting}
-                  disabled={adaptationLoading || !adaptationState?.can_reopen}
-                  onClick={handleReopenAdaptationPlan}
-                >
-                  重开规划
-                </Button>
-              </Space>
-            )}
-          />
-        )}
         {/* 固定头部 */}
         <div style={{
           position: 'sticky',
@@ -1616,9 +1488,7 @@ export default function Outline() {
             <Button
               icon={<PlusOutlined />}
               onClick={showManualCreateOutlineModal}
-              disabled={adaptationPlanningLocked}
               block={isMobile}
-              title={adaptationPlanningLocked ? adaptationLockedReason : undefined}
             >
               手动创建
             </Button>
@@ -1627,9 +1497,7 @@ export default function Outline() {
               icon={<ThunderboltOutlined />}
               onClick={showGenerateModal}
               loading={isGenerating}
-              disabled={adaptationPlanningLocked}
               block={isMobile}
-              title={adaptationPlanningLocked ? adaptationLockedReason : undefined}
             >
               {isMobile ? 'AI生成/续写' : 'AI生成/续写大纲'}
             </Button>
@@ -1638,8 +1506,8 @@ export default function Outline() {
                 icon={<AppstoreAddOutlined />}
                 onClick={handleBatchExpandOutlines}
                 loading={isExpanding}
-                disabled={isGenerating || adaptationPlanningLocked}
-                title={adaptationPlanningLocked ? adaptationLockedReason : '将所有大纲展开为多章，实现从大纲到章节的一对多关系'}
+                disabled={isGenerating}
+                title="将所有大纲展开为多章，实现从大纲到章节的一对多关系"
               >
                 {isMobile ? '批量展开' : '批量展开为多章'}
               </Button>
@@ -2398,9 +2266,7 @@ export default function Outline() {
                               icon={<BranchesOutlined />}
                               onClick={() => handleExpandOutline(item.id, item.title)}
                               loading={isExpanding}
-                              disabled={adaptationPlanningLocked}
                               size={isMobile ? 'middle' : 'small'}
-                              title={adaptationPlanningLocked ? adaptationLockedReason : undefined}
                             >
                               展开
                             </Button>
@@ -2408,9 +2274,7 @@ export default function Outline() {
                           <Button
                             icon={<EditOutlined />}
                             onClick={() => handleOpenEditModal(item.id)}
-                            disabled={adaptationPlanningLocked}
                             size={isMobile ? 'middle' : 'small'}
-                            title={adaptationPlanningLocked ? adaptationLockedReason : undefined}
                           >
                             编辑
                           </Button>
@@ -2423,9 +2287,7 @@ export default function Outline() {
                             <Button
                               danger
                               icon={<DeleteOutlined />}
-                              disabled={adaptationPlanningLocked}
                               size={isMobile ? 'middle' : 'small'}
-                              title={adaptationPlanningLocked ? adaptationLockedReason : undefined}
                             >
                               删除
                             </Button>

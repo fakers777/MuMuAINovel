@@ -5,8 +5,8 @@ import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
-import { adaptationApi, projectApi, writingStyleApi, chapterApi } from '../services/api';
-import type { AdaptationState, Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
+import { projectApi, writingStyleApi, chapterApi } from '../services/api';
+import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import ChapterAnalysis from '../components/ChapterAnalysis';
 import ExpansionPlanEditor from '../components/ExpansionPlanEditor';
@@ -48,7 +48,6 @@ const setCachedWordCount = (value: number): void => {
 
 export default function Chapters() {
   const { currentProject, chapters, outlines, setCurrentChapter, setCurrentProject } = useStore();
-  const [adaptationState, setAdaptationState] = useState<AdaptationState | null>(null);
   const [modal, contextHolder] = Modal.useModal();
   const { token } = theme.useToken();
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -115,20 +114,6 @@ export default function Chapters() {
     estimated_time_minutes?: number;
   } | null>(null);
   const batchPollingIntervalRef = useRef<number | null>(null);
-
-  const loadAdaptationState = useCallback(async (projectId: string) => {
-    try {
-      const state = await adaptationApi.getState(projectId);
-      setAdaptationState(state);
-    } catch (error) {
-      const maybeError = error as { response?: { status?: number } };
-      if (maybeError.response?.status === 404) {
-        setAdaptationState(null);
-      } else {
-        console.error('加载改编状态失败:', error);
-      }
-    }
-  }, []);
 
   useEffect(() => {
     const handleResize = () => {
@@ -358,7 +343,6 @@ export default function Chapters() {
       loadWritingStyles();
       loadAnalysisTasks();
       checkAndRestoreBatchTask();
-      loadAdaptationState(currentProject.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
@@ -746,12 +730,6 @@ export default function Chapters() {
 
   if (!currentProject) return null;
 
-  const isAdaptationProject = adaptationState?.workflow_mode === 'adaptation';
-  const adaptationGenerationReady = !isAdaptationProject || ['materialized', 'generating', 'writing'].includes(adaptationState.workflow_status);
-  const adaptationGenerationBlockedReason = isAdaptationProject && !adaptationGenerationReady
-    ? '改编项目需先在大纲页确认大纲并物化占位章节，之后才能生成正文。'
-    : '';
-
   // 获取人称的中文显示文本（同时支持中英文值）
   const getNarrativePerspectiveText = (perspective?: string): string => {
     const texts: Record<string, string> = {
@@ -768,16 +746,10 @@ export default function Chapters() {
   };
 
   const canGenerateChapter = (chapter: Chapter): boolean => {
-    if (adaptationGenerationBlockedReason) {
-      return false;
-    }
     return chapterGenerateGateMap[chapter.id]?.canGenerate ?? true;
   };
 
   const getGenerateDisabledReason = (chapter: Chapter): string => {
-    if (adaptationGenerationBlockedReason) {
-      return adaptationGenerationBlockedReason;
-    }
     return chapterGenerateGateMap[chapter.id]?.reason || '';
   };
 
@@ -842,10 +814,6 @@ export default function Chapters() {
 
   const handleGenerate = async () => {
     if (!editingId) return;
-    if (adaptationGenerationBlockedReason) {
-      message.warning(adaptationGenerationBlockedReason);
-      return;
-    }
 
     try {
       setIsContinuing(true);
@@ -907,10 +875,6 @@ export default function Chapters() {
   };
 
   const showGenerateModal = (chapter: Chapter) => {
-    if (adaptationGenerationBlockedReason) {
-      message.warning(adaptationGenerationBlockedReason);
-      return;
-    }
     const previousChapters = chapters.filter(
       c => c.chapter_number < chapter.chapter_number
     ).sort((a, b) => a.chapter_number - b.chapter_number);
@@ -962,15 +926,6 @@ export default function Chapters() {
           <p style={{ color: token.colorError, marginTop: 16, marginBottom: 0 }}>
             ⚠️ 注意：此操作将覆盖当前章节内容
           </p>
-          {isAdaptationProject && (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginTop: 16 }}
-              message="改编项目生成提示"
-              description="当前项目已完成改编大纲确认，正文生成会基于占位章节顺序推进。"
-            />
-          )}
         </div>
       ),
       okText: '开始创作',
@@ -1023,10 +978,6 @@ export default function Chapters() {
   // 不再强制显示进度弹窗，任务进度在右下角悬浮任务框中显示
   const handleBackgroundGenerate = async () => {
     if (!editingId) return;
-    if (adaptationGenerationBlockedReason) {
-      message.warning(adaptationGenerationBlockedReason);
-      return;
-    }
     if (!selectedStyleId) {
       message.error("请先选择写作风格");
       return;
@@ -1044,7 +995,7 @@ export default function Chapters() {
         () => {
           // 进度更新由悬浮任务框处理，无需额外操作
         },
-        () => {
+        (_) => {
           message.success("后台章节生成完成！");
           refreshChapters();
           if (currentProject) {
@@ -1060,7 +1011,7 @@ export default function Chapters() {
       message.info("章节生成任务已提交，可在右下角任务面板查看进度");
       // 通知悬浮任务框刷新
       eventBus.emit('background-task-created');
-    } catch {
+    } catch (error) {
       message.error("创建后台任务失败");
     }
   };
@@ -1157,10 +1108,6 @@ export default function Chapters() {
     model?: string;
   }) => {
     if (!currentProject?.id) return;
-    if (adaptationGenerationBlockedReason) {
-      message.warning(adaptationGenerationBlockedReason);
-      return;
-    }
 
     // 调试日志
     console.log('[批量生成] 表单values:', values);
@@ -1377,10 +1324,6 @@ export default function Chapters() {
 
   // 打开批量生成对话框
   const handleOpenBatchGenerate = async () => {
-    if (adaptationGenerationBlockedReason) {
-      message.warning(adaptationGenerationBlockedReason);
-      return;
-    }
     // 找到第一个未生成的章节
     const firstIncompleteChapter = sortedChapters.find(
       ch => !ch.content || ch.content.trim() === ''
@@ -1978,17 +1921,6 @@ export default function Chapters() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {contextHolder}
-      {isAdaptationProject && (
-        <Alert
-          type={adaptationGenerationReady ? 'success' : 'warning'}
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={adaptationGenerationReady ? '改编项目已可生成正文' : '改编项目尚未物化章节'}
-          description={adaptationGenerationReady
-            ? '当前项目已完成大纲确认，单章与批量生成都会基于占位章节顺序推进。'
-            : adaptationGenerationBlockedReason}
-        />
-      )}
       <div style={{
         position: 'sticky',
         top: 0,
@@ -2052,12 +1984,11 @@ export default function Chapters() {
             type="primary"
             icon={<RocketOutlined />}
             onClick={handleOpenBatchGenerate}
-            disabled={chapters.length === 0 || batchGenerating || Boolean(adaptationGenerationBlockedReason)}
+            disabled={chapters.length === 0 || batchGenerating}
             loading={batchGenerating}
             block={isMobile}
             size={isMobile ? 'middle' : 'middle'}
             style={batchGenerating ? {} : { background: token.colorInfo, borderColor: token.colorInfo }}
-            title={adaptationGenerationBlockedReason || undefined}
           >
             {batchGenerating ? '生成中...' : '批量生成'}
           </Button>
@@ -2602,17 +2533,6 @@ export default function Chapters() {
         footer={null}
       >
         <Form form={editorForm} layout="vertical" onFinish={handleEditorSubmit}>
-          {isAdaptationProject && (
-            <Alert
-              type={adaptationGenerationReady ? 'info' : 'warning'}
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="改编项目单章生成提示"
-              description={adaptationGenerationReady
-                ? 'AI 创作会基于当前占位章节与既有顺序继续推进。'
-                : adaptationGenerationBlockedReason}
-            />
-          )}
           {/* 章节标题和AI创作按钮 */}
           <Form.Item
             label="章节标题"
@@ -2911,15 +2831,6 @@ export default function Chapters() {
               model: selectedModel,
             }}
           >
-            {isAdaptationProject && (
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message="改编项目批量生成提示"
-                description="批量生成会严格沿已物化的占位章节顺序执行，未完成大纲物化前不可启动。"
-              />
-            )}
             <Alert
               message="批量生成说明：严格按序生成 | 统一风格字数 | 任一失败则终止"
               type="info"
