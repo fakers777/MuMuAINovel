@@ -182,6 +182,24 @@ class OriginalNovelAdaptationService:
         )
         return [AdaptationCanonAuditResponse.model_validate(row) for row in result.scalars().all()]
 
+    async def _get_active_draft_batch(
+        self,
+        db: AsyncSession,
+        adaptation_project: AdaptationProject,
+    ) -> Optional[AdaptationPlanningBatch]:
+        if not adaptation_project.active_batch_id:
+            return None
+        result = await db.execute(
+            select(AdaptationPlanningBatch).where(
+                AdaptationPlanningBatch.id == adaptation_project.active_batch_id,
+                AdaptationPlanningBatch.adaptation_project_id == adaptation_project.id,
+            )
+        )
+        batch = result.scalar_one_or_none()
+        if batch and batch.status == "draft":
+            return batch
+        return None
+
     def _extract_json_payload(self, text: str) -> dict[str, Any]:
         parsed = parse_json(text)
         if not isinstance(parsed, dict):
@@ -524,6 +542,7 @@ JSON 结构：
             recent_audits=recent_audits,
             can_edit_brief=adaptation_project.workflow_status not in {"batch_planning", "batch_generating"},
             can_plan_next_batch=adaptation_project.active_batch_id is None,
+            can_replan_draft=bool(draft_batch) and adaptation_project.workflow_status not in {"batch_planning", "batch_generating"},
             created_at=adaptation_project.created_at,
             updated_at=adaptation_project.updated_at,
         )
@@ -622,6 +641,57 @@ JSON 结构：
         if adaptation_project.active_batch_id:
             raise HTTPException(status_code=409, detail="当前还有未确认的批次，请先确认后再规划下一批")
 
+        return await self._plan_batch_draft(
+            adaptation_project=adaptation_project,
+            project=project,
+            brief=brief,
+            db=db,
+            batch_size=batch_size,
+            ai_service=ai_service,
+            existing_draft_batch=None,
+        )
+
+    async def replan_draft_batch(
+        self,
+        *,
+        adaptation_project_id: str,
+        user_id: str,
+        db: AsyncSession,
+        batch_size: int,
+        ai_service: AIService,
+    ) -> AdaptationPlanningBatchResponse:
+        adaptation_project, project = await self._get_adaptation_project(db, adaptation_project_id, user_id)
+        brief = await self._get_active_brief(db, adaptation_project.id)
+        if not brief:
+            raise HTTPException(status_code=400, detail="请先保存自由提示词")
+        if adaptation_project.workflow_status in {"batch_planning", "batch_generating"}:
+            raise HTTPException(status_code=409, detail="当前有运行中的规划或正文生成任务，暂时不能重新规划草稿")
+
+        draft_batch = await self._get_active_draft_batch(db, adaptation_project)
+        if not draft_batch:
+            raise HTTPException(status_code=409, detail="当前没有可重新规划的草稿批次")
+
+        return await self._plan_batch_draft(
+            adaptation_project=adaptation_project,
+            project=project,
+            brief=brief,
+            db=db,
+            batch_size=batch_size,
+            ai_service=ai_service,
+            existing_draft_batch=draft_batch,
+        )
+
+    async def _plan_batch_draft(
+        self,
+        *,
+        adaptation_project: AdaptationProject,
+        project: Project,
+        brief: AdaptationBrief,
+        db: AsyncSession,
+        batch_size: int,
+        ai_service: AIService,
+        existing_draft_batch: Optional[AdaptationPlanningBatch],
+    ) -> AdaptationPlanningBatchResponse:
         corpus = await self._get_source_corpus(db, adaptation_project.id)
         confirmed_batches = await self._load_confirmed_batches(db, adaptation_project.id)
         confirmed_items: list[AdaptationBatchItem] = []
@@ -662,7 +732,7 @@ JSON 结构：
         adaptation_project.workflow_status = "batch_planning"
         await db.flush()
 
-        next_batch_number = (confirmed_batches[-1].batch_number if confirmed_batches else 0) + 1
+        next_batch_number = existing_draft_batch.batch_number if existing_draft_batch else (confirmed_batches[-1].batch_number if confirmed_batches else 0) + 1
         prompt = self._build_planning_prompt(
             project_title=project.title,
             brief_text=brief.brief_text,
@@ -688,23 +758,47 @@ JSON 结构：
         validation_response = await ai_service.generate_text(prompt=validation_prompt, auto_mcp=False, temperature=0.1, max_tokens=1800)
         validation_payload = self._extract_json_payload(validation_response.get("content", ""))
 
-        batch = AdaptationPlanningBatch(
-            adaptation_project_id=adaptation_project.id,
-            batch_number=next_batch_number,
-            requested_batch_size=batch_size,
-            brief_version=brief.version,
-            status="draft",
-            batch_summary=payload.get("batch_summary"),
-            retrieval_summary={
+        if existing_draft_batch:
+            batch = existing_draft_batch
+            await db.execute(
+                delete(AdaptationCanonAudit).where(
+                    AdaptationCanonAudit.batch_id == batch.id,
+                    AdaptationCanonAudit.audit_type == "planning",
+                )
+            )
+            await db.execute(delete(AdaptationBatchItem).where(AdaptationBatchItem.batch_id == batch.id))
+            batch.requested_batch_size = batch_size
+            batch.brief_version = brief.version
+            batch.status = "draft"
+            batch.batch_summary = payload.get("batch_summary")
+            batch.retrieval_summary = {
                 "requested_batch_size": batch_size,
                 "retrieved_chunk_ids": [chunk["chunk_id"] for chunk in retrieved_chunks],
                 "retrieved_chunk_count": len(retrieved_chunks),
                 "confirmed_batch_refs": self._build_confirmed_batch_refs(confirmed_batches),
                 "written_chapter_count": len(written_chapters),
-            },
-        )
-        db.add(batch)
-        await db.flush()
+                "regenerated_from_existing_draft": True,
+            }
+            batch.confirmed_at = None
+            await db.flush()
+        else:
+            batch = AdaptationPlanningBatch(
+                adaptation_project_id=adaptation_project.id,
+                batch_number=next_batch_number,
+                requested_batch_size=batch_size,
+                brief_version=brief.version,
+                status="draft",
+                batch_summary=payload.get("batch_summary"),
+                retrieval_summary={
+                    "requested_batch_size": batch_size,
+                    "retrieved_chunk_ids": [chunk["chunk_id"] for chunk in retrieved_chunks],
+                    "retrieved_chunk_count": len(retrieved_chunks),
+                    "confirmed_batch_refs": self._build_confirmed_batch_refs(confirmed_batches),
+                    "written_chapter_count": len(written_chapters),
+                },
+            )
+            db.add(batch)
+            await db.flush()
 
         for index, item in enumerate(raw_items, start=1):
             batch_item = AdaptationBatchItem(

@@ -1184,6 +1184,7 @@ export interface AdaptationProjectDetail {
   recent_audits: AdaptationCanonAudit[];
   can_edit_brief: boolean;
   can_plan_next_batch: boolean;
+  can_replan_draft: boolean;
   created_at: string;
   updated_at: string;
 }

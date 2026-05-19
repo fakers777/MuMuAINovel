@@ -113,6 +113,26 @@ async def plan_next_adaptation_batch(
     )
 
 
+@router.post("/projects/{adaptation_project_id}/replan-draft", response_model=AdaptationPlanningBatchResponse, summary="重新规划当前草稿批次")
+async def replan_adaptation_draft_batch(
+    adaptation_project_id: str,
+    payload: AdaptationPlanBatchRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+    ai_service = await get_user_ai_service_from_db(user_id, db)
+    return await original_novel_adaptation_service.replan_draft_batch(
+        adaptation_project_id=adaptation_project_id,
+        user_id=user_id,
+        db=db,
+        batch_size=payload.batch_size,
+        ai_service=ai_service,
+    )
+
+
 @router.post("/projects/{adaptation_project_id}/batches/{batch_id}/confirm", response_model=AdaptationBatchConfirmResponse, summary="确认当前批次并物化")
 async def confirm_adaptation_batch(
     adaptation_project_id: str,

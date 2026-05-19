@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 from app.database import get_db
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
 from app.models.character import Character
+from app.models.outline import Outline
 from app.models.project import Project
 from app.models.generation_history import GenerationHistory
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
@@ -23,6 +24,8 @@ from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
+from app.services.auto_character_service import get_auto_character_service
+from app.services.auto_organization_service import get_auto_organization_service
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
@@ -270,6 +273,73 @@ async def get_project_characters(
         enriched_characters.append(char_dict)
     
     return CharacterListResponse(total=total, items=enriched_characters)
+
+
+@router.post("/project/{project_id}/sync-from-outlines", summary="根据大纲补全角色和组织")
+async def sync_characters_from_outlines(
+    project_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """根据项目现有大纲 structure.characters 自动补全缺失角色和组织。"""
+    user_id = getattr(request.state, 'user_id', None)
+    await verify_project_access(project_id, user_id, db)
+
+    outline_result = await db.execute(
+        select(Outline)
+        .where(Outline.project_id == project_id)
+        .order_by(Outline.order_index.asc())
+    )
+    outlines = outline_result.scalars().all()
+
+    outline_data = []
+    for outline in outlines:
+        structure_data = {}
+        if outline.structure:
+            try:
+                structure_data = loads_json(outline.structure) if isinstance(outline.structure, str) else outline.structure
+            except Exception:
+                logger.warning("解析大纲结构失败，已跳过该结构字段", extra={"outline_id": outline.id})
+                structure_data = {}
+
+        outline_data.append(
+            {
+                "title": outline.title,
+                "summary": structure_data.get("summary") or outline.content or "",
+                "content": outline.content or "",
+                "characters": structure_data.get("characters", []),
+            }
+        )
+
+    ai_service = await get_user_ai_service(request, db)
+    auto_character_service = get_auto_character_service(ai_service)
+    auto_organization_service = get_auto_organization_service(ai_service)
+
+    character_result = await auto_character_service.check_and_create_missing_characters(
+        project_id=project_id,
+        outline_data_list=outline_data,
+        db=db,
+        user_id=user_id,
+    )
+    organization_result = await auto_organization_service.check_and_create_missing_organizations(
+        project_id=project_id,
+        outline_data_list=outline_data,
+        db=db,
+        user_id=user_id,
+    )
+    await db.commit()
+
+    return {
+        "success": True,
+        "characters": {
+            "created_count": character_result.get("created_count", 0),
+            "missing_names": character_result.get("missing_names", []),
+        },
+        "organizations": {
+            "created_count": organization_result.get("created_count", 0),
+            "missing_names": organization_result.get("missing_names", []),
+        },
+    }
 
 
 @router.get("/{character_id}", response_model=CharacterResponse, summary="获取角色详情")
