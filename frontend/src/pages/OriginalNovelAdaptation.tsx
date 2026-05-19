@@ -178,6 +178,25 @@ export default function OriginalNovelAdaptation() {
     }
   };
 
+  const handleReplanDraftBatch = async () => {
+    if (!detail?.draft_batch) return;
+    if (!detail.active_brief_text && !briefText.trim()) {
+      message.warning('请先保存自由提示词');
+      return;
+    }
+    try {
+      setPlanning(true);
+      await adaptationApi.replanDraftBatch(detail.adaptation_project_id, batchSize);
+      message.success('当前草稿批次已按最新提示词重新规划');
+      await loadDetail(detail.adaptation_project_id);
+      await loadProjects(detail.adaptation_project_id);
+    } catch (error) {
+      console.error('重新规划当前草稿失败:', error);
+    } finally {
+      setPlanning(false);
+    }
+  };
+
   const handleConfirmBatch = async () => {
     if (!detail?.draft_batch) return;
     try {
@@ -363,9 +382,23 @@ export default function OriginalNovelAdaptation() {
                       >
                         规划下一批章节
                       </Button>
+                      <Button
+                        onClick={handleReplanDraftBatch}
+                        loading={planning}
+                        disabled={!detail.can_replan_draft}
+                      >
+                        重新规划当前草稿
+                      </Button>
                     </Space>
                     {!detail.can_plan_next_batch ? (
                       <Alert type="warning" showIcon message="当前有未确认草稿批次，请先确认后再继续规划。" />
+                    ) : null}
+                    {detail.can_replan_draft ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="如果你刚修改了提示词，而这一批还只是草稿，可以直接重新规划当前草稿，不必先确认再往下生成下一批。"
+                      />
                     ) : null}
                   </Space>
                 </Card>

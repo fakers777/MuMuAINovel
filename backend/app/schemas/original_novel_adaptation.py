@@ -122,6 +122,7 @@ class AdaptationProjectDetailResponse(BaseModel):
     recent_audits: list[AdaptationCanonAuditResponse] = Field(default_factory=list)
     can_edit_brief: bool = True
     can_plan_next_batch: bool = True
+    can_replan_draft: bool = False
     created_at: datetime
     updated_at: datetime
 

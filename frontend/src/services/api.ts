@@ -552,6 +552,12 @@ export const adaptationApi = {
       { batch_size: batchSize }
     ),
 
+  replanDraftBatch: (adaptationProjectId: string, batchSize: number) =>
+    api.post<unknown, AdaptationPlanningBatch>(
+      `/original-novel-adaptation/projects/${adaptationProjectId}/replan-draft`,
+      { batch_size: batchSize }
+    ),
+
   confirmBatch: (adaptationProjectId: string, batchId: string) =>
     api.post<unknown, AdaptationBatchConfirmResponse>(
       `/original-novel-adaptation/projects/${adaptationProjectId}/batches/${batchId}/confirm`,
@@ -757,6 +763,19 @@ export const characterApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+
+  syncFromOutlines: (projectId: string) =>
+    api.post<unknown, {
+      success: boolean;
+      characters: {
+        created_count: number;
+        missing_names: string[];
+      };
+      organizations: {
+        created_count: number;
+        missing_names: string[];
+      };
+    }>(`/characters/project/${projectId}/sync-from-outlines`),
 };
 
 export const chapterApi = {
