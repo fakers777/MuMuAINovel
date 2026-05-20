@@ -68,6 +68,7 @@ import type {
   AdaptationPlanningBatch,
   AdaptationBatchConfirmResponse,
   AdaptationChapterGenerateResponse,
+  AdaptationDraftBatchItemUpdate,
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
@@ -556,6 +557,17 @@ export const adaptationApi = {
     api.post<unknown, AdaptationPlanningBatch>(
       `/original-novel-adaptation/projects/${adaptationProjectId}/replan-draft`,
       { batch_size: batchSize }
+    ),
+
+  updateDraftBatchItem: (
+    adaptationProjectId: string,
+    batchId: string,
+    batchItemId: string,
+    payload: AdaptationDraftBatchItemUpdate
+  ) =>
+    api.put<unknown, import('../types').AdaptationBatchItem>(
+      `/original-novel-adaptation/projects/${adaptationProjectId}/batches/${batchId}/items/${batchItemId}`,
+      payload
     ),
 
   confirmBatch: (adaptationProjectId: string, batchId: string) =>

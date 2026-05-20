@@ -141,20 +141,21 @@ async def get_outlines(
             try:
                 structure_data = json.loads(outline.structure)
 
-                # 从structure中提取所有字段填充到outline对象
-                outline.title = structure_data.get("title", f"第{outline.order_index}章")
-                outline.content = structure_data.get("summary") or structure_data.get("content", "")
+                # 从structure中提取展示字段；缺失时保留数据库中的标题/内容
+                structure_title = structure_data.get("title")
+                structure_content = structure_data.get("summary") or structure_data.get("content")
+                outline.title = structure_title or outline.title or f"第{outline.order_index}章"
+                outline.content = structure_content or outline.content or "暂无内容"
 
                 # structure字段保持不变，供前端使用其他字段（如characters、scenes等）
 
             except json.JSONDecodeError:
                 logger.warning(f"解析大纲 {outline.id} 的structure失败")
-                outline.title = f"第{outline.order_index}章"
-                outline.content = "解析失败"
+                outline.title = outline.title or f"第{outline.order_index}章"
+                outline.content = outline.content or "解析失败"
         else:
-            # 没有structure的异常情况
-            outline.title = f"第{outline.order_index}章"
-            outline.content = "暂无内容"
+            outline.title = outline.title or f"第{outline.order_index}章"
+            outline.content = outline.content or "暂无内容"
 
     return OutlineListResponse(total=total, items=outlines)
 

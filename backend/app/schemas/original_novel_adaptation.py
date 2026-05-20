@@ -27,6 +27,12 @@ class AdaptationPlanBatchRequest(BaseModel):
     batch_size: int = Field(..., ge=1, le=20, description="本次规划章节数")
 
 
+class AdaptationDraftBatchItemUpdateRequest(BaseModel):
+    proposed_title: str = Field(..., min_length=1, max_length=255, description="草稿章节标题")
+    proposed_outline: str = Field(..., min_length=1, description="草稿章节大纲")
+    notes: Optional[str] = Field(None, description="额外说明")
+
+
 class AdaptationGenerateChapterRequest(BaseModel):
     chapter_id: str = Field(..., description="共享章节ID")
     batch_item_id: str = Field(..., description="批次项ID")

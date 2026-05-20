@@ -7,7 +7,9 @@ from app.database import get_db
 from app.schemas.original_novel_adaptation import (
     AdaptationBatchConfirmResponse,
     AdaptationBriefSaveResponse,
+    AdaptationDraftBatchItemUpdateRequest,
     AdaptationBriefUpdateRequest,
+    AdaptationBatchItemResponse,
     AdaptationChapterGenerateResponse,
     AdaptationGenerateChapterRequest,
     AdaptationPlanningBatchResponse,
@@ -130,6 +132,34 @@ async def replan_adaptation_draft_batch(
         db=db,
         batch_size=payload.batch_size,
         ai_service=ai_service,
+    )
+
+
+@router.put(
+    "/projects/{adaptation_project_id}/batches/{batch_id}/items/{batch_item_id}",
+    response_model=AdaptationBatchItemResponse,
+    summary="修改草稿批次章节项"
+)
+async def update_adaptation_draft_batch_item(
+    adaptation_project_id: str,
+    batch_id: str,
+    batch_item_id: str,
+    payload: AdaptationDraftBatchItemUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+    return await original_novel_adaptation_service.update_draft_batch_item(
+        adaptation_project_id=adaptation_project_id,
+        batch_id=batch_id,
+        batch_item_id=batch_item_id,
+        user_id=user_id,
+        db=db,
+        proposed_title=payload.proposed_title,
+        proposed_outline=payload.proposed_outline,
+        notes=payload.notes,
     )
 
 

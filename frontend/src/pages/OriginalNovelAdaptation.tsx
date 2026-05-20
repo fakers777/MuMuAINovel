@@ -74,6 +74,8 @@ export default function OriginalNovelAdaptation() {
   const [planning, setPlanning] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [generatingItemId, setGeneratingItemId] = useState<string | null>(null);
+  const [savingDraftItemId, setSavingDraftItemId] = useState<string | null>(null);
+  const [draftEdits, setDraftEdits] = useState<Record<string, { proposed_title: string; proposed_outline: string }>>({});
 
   const loadProjects = async (preferredId?: string) => {
     try {
@@ -115,6 +117,19 @@ export default function OriginalNovelAdaptation() {
     }
     void loadDetail(selectedProjectId);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    const items = detail?.draft_batch?.items || [];
+    setDraftEdits(
+      items.reduce<Record<string, { proposed_title: string; proposed_outline: string }>>((acc, item) => {
+        acc[item.id] = {
+          proposed_title: item.proposed_title,
+          proposed_outline: item.proposed_outline,
+        };
+        return acc;
+      }, {})
+    );
+  }, [detail?.draft_batch]);
 
   const handleCreate = async () => {
     if (!createFile) {
@@ -230,6 +245,45 @@ export default function OriginalNovelAdaptation() {
       console.error('生成正文失败:', error);
     } finally {
       setGeneratingItemId(null);
+    }
+  };
+
+  const updateDraftEdit = (itemId: string, patch: Partial<{ proposed_title: string; proposed_outline: string }>) => {
+    setDraftEdits((prev) => ({
+      ...prev,
+      [itemId]: {
+        proposed_title: patch.proposed_title ?? prev[itemId]?.proposed_title ?? '',
+        proposed_outline: patch.proposed_outline ?? prev[itemId]?.proposed_outline ?? '',
+      },
+    }));
+  };
+
+  const handleSaveDraftItem = async (item: AdaptationBatchItem) => {
+    if (!detail?.draft_batch) return;
+    const edit = draftEdits[item.id];
+    const proposedTitle = edit?.proposed_title?.trim() || '';
+    const proposedOutline = edit?.proposed_outline?.trim() || '';
+    if (!proposedTitle) {
+      message.warning('章节标题不能为空');
+      return;
+    }
+    if (!proposedOutline) {
+      message.warning('章节大纲不能为空');
+      return;
+    }
+
+    try {
+      setSavingDraftItemId(item.id);
+      await adaptationApi.updateDraftBatchItem(detail.adaptation_project_id, detail.draft_batch.id, item.id, {
+        proposed_title: proposedTitle,
+        proposed_outline: proposedOutline,
+      });
+      message.success(`第 ${item.item_index} 章草稿已更新`);
+      await loadDetail(detail.adaptation_project_id);
+    } catch (error) {
+      console.error('更新草稿批次章节项失败:', error);
+    } finally {
+      setSavingDraftItemId(null);
     }
   };
 
@@ -430,12 +484,30 @@ export default function OriginalNovelAdaptation() {
                             <Space direction="vertical" size={6} style={{ width: '100%' }}>
                               <Space wrap>
                                 <Tag>第 {item.item_index} 章</Tag>
-                                <Text strong>{item.proposed_title}</Text>
+                                <Text type="secondary">确认前可直接改标题和大纲</Text>
                               </Space>
-                              <Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
-                                {item.proposed_outline}
-                              </Paragraph>
+                              <Input
+                                value={draftEdits[item.id]?.proposed_title ?? item.proposed_title}
+                                onChange={(event) => updateDraftEdit(item.id, { proposed_title: event.target.value })}
+                                placeholder="章节标题"
+                              />
+                              <TextArea
+                                rows={5}
+                                value={draftEdits[item.id]?.proposed_outline ?? item.proposed_outline}
+                                onChange={(event) => updateDraftEdit(item.id, { proposed_outline: event.target.value })}
+                                placeholder="章节大纲"
+                              />
                               <Text type="secondary">切块：{item.source_chunk_ids.join(', ')}</Text>
+                              <Space>
+                                <Button
+                                  type="primary"
+                                  size="small"
+                                  loading={savingDraftItemId === item.id}
+                                  onClick={() => void handleSaveDraftItem(item)}
+                                >
+                                  保存这一章
+                                </Button>
+                              </Space>
                             </Space>
                           </List.Item>
                         )}

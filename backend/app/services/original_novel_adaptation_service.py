@@ -883,6 +883,9 @@ JSON 结构：
                 order_index=next_outline_index,
                 structure=json.dumps(
                     {
+                        "title": item.proposed_title,
+                        "summary": item.proposed_outline,
+                        "content": item.proposed_outline,
                         "source_chunk_ids": item.source_chunk_ids or [],
                         "source_span_start": item.source_span_start,
                         "source_span_end": item.source_span_end,
@@ -935,6 +938,58 @@ JSON 结构：
             materialized_count=len(items),
             project_id=project.id,
         )
+
+    async def update_draft_batch_item(
+        self,
+        *,
+        adaptation_project_id: str,
+        batch_id: str,
+        batch_item_id: str,
+        user_id: str,
+        db: AsyncSession,
+        proposed_title: str,
+        proposed_outline: str,
+        notes: Optional[str],
+    ) -> AdaptationBatchItem:
+        adaptation_project, _ = await self._get_adaptation_project(db, adaptation_project_id, user_id)
+
+        batch_result = await db.execute(
+            select(AdaptationPlanningBatch).where(
+                AdaptationPlanningBatch.id == batch_id,
+                AdaptationPlanningBatch.adaptation_project_id == adaptation_project.id,
+            )
+        )
+        batch = batch_result.scalar_one_or_none()
+        if not batch:
+            raise HTTPException(status_code=404, detail="批次不存在")
+        if batch.status != "draft":
+            raise HTTPException(status_code=400, detail="只有草稿批次可以修改")
+
+        item_result = await db.execute(
+            select(AdaptationBatchItem).where(
+                AdaptationBatchItem.id == batch_item_id,
+                AdaptationBatchItem.batch_id == batch.id,
+            )
+        )
+        item = item_result.scalar_one_or_none()
+        if not item:
+            raise HTTPException(status_code=404, detail="批次章节项不存在")
+
+        normalized_title = proposed_title.strip()
+        normalized_outline = proposed_outline.strip()
+        if not normalized_title:
+            raise HTTPException(status_code=400, detail="章节标题不能为空")
+        if not normalized_outline:
+            raise HTTPException(status_code=400, detail="章节大纲不能为空")
+
+        item.proposed_title = normalized_title[:255]
+        item.proposed_outline = normalized_outline
+        item.notes = notes.strip() if isinstance(notes, str) and notes.strip() else None
+        adaptation_project.workflow_status = "batch_draft_ready"
+
+        await db.commit()
+        await db.refresh(item)
+        return item
 
     async def generate_chapter(
         self,

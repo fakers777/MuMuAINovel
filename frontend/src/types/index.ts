@@ -1137,6 +1137,12 @@ export interface AdaptationBatchItem {
   materialized_chapter_id?: string | null;
 }
 
+export interface AdaptationDraftBatchItemUpdate {
+  proposed_title: string;
+  proposed_outline: string;
+  notes?: string | null;
+}
+
 export interface AdaptationPlanningBatch {
   id: string;
   batch_number: number;
